@@ -1,10 +1,2 @@
-# Fastbootd
-
-TW_INCLUDE_FASTBOOTD := true
-
-PRODUCT_PACKAGES += \
-	fastbootd \
-	android.hardware.fastboot@1.0-impl-mock
-
-PRODUCT_PRODUCT_PROPERTIES += \
-	ro.fastbootd.available=true
+# Fastbootd is not included: Samsung bootloaders have no fastboot mode,
+# and the recovery partition has little room left for the ramdisk.
