@@ -424,6 +424,18 @@ $rc = Get-Text $rd 'init.recovery.samsungexynos7885.rc'
 Add-Result 'Flashlight' 'rear flash bridged to /tmp/flashlight' ([bool]$rc -and $rc -match 'mkdir\s+/tmp/flashlight' -and $rc -match 'symlink\s+/sys/class/camera/flash/rear_flash\s+/tmp/flashlight/brightness') 'OF_FL_PATH1=/tmp/flashlight'
 Add-Result 'Flashlight' 'max_brightness written' ([bool]$rc -and $rc -match 'write\s+/tmp/flashlight/max_brightness\s+"?1"?') '1'
 
+# Display colors: the framebuffer is BGRA (red.offset 16); ABGR_8888 plus the
+# res_swap_red_blue() patch draw the orange accent orange instead of blue
+$fmt = Get-Prop 'ro.minui.pixel_format'
+Add-Result 'Display' 'pixel format ABGR_8888' ($fmt -eq 'ABGR_8888') "ro.minui.pixel_format=$fmt"
+$lib = $rd.Files['system/lib64/libminuitwrp.so']
+$swap = $false
+if ($lib) {
+  $libText = [Text.Encoding]::ASCII.GetString($rd.Data, $lib[0], $lib[1])
+  $swap = $libText.Contains('res_swap_red_blue')
+}
+Add-Result 'Display' 'libminuitwrp with the accent color patch' $swap $(if (-not $lib) { 'libminuitwrp.so missing' } elseif ($swap) { 'res_swap_red_blue' } else { 'old library, accent drawn blue' })
+
 # USB
 $usb = Get-Text $rd 'init.recovery.usb.rc'
 Add-Result 'USB' 'configfs USB gadget' ([bool]$usb -and $usb -match '/config/usb_gadget') ''

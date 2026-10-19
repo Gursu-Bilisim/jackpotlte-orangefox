@@ -9,11 +9,12 @@ Tested by the maintainer before publishing. Update this file for every release.
 | ROM | One UI port from the Galaxy S23 FE (SM-S711B), Android 16, `S711BXXSFFZD2` (XROM-V16.1), vendor from SM-A530N Android 9 (`A530NKSU9CUL1`) |
 | /data | ext4, not encrypted |
 | Recovery kernel | 4.4.302 (prebuilt in this tree) |
-| Tested image | SHA-256 `fa07ca41c92f4939b93f50edb23f2328ef07e29e02cdb991a75fc5734dc46c3f` |
+| Tested image | SHA-256 `48d14b18ea95451a0663b7f658338d38b858fdc6684c1b3d87f9b785882dd76d` |
 
 | Test | Result | Notes |
 |---|---|---|
 | Boot, display, touch | OK | 1080x2220 |
+| Accent color | OK | orange logo, check boxes, radio buttons, Menu button and unlock slider; text and PNG icons unchanged |
 | /data and internal storage | OK | "Storage is not encrypted" |
 | ADB | OK | |
 | MTP | OK | |
@@ -27,7 +28,11 @@ Tested by the maintainer before publishing. Update this file for every release.
 | `recovery-inspect.ps1` | OK | all checks |
 | `patch-check.ps1` | OK | reports no dependency on the ROM build |
 
-Installed for the test with `dd` from the previous TWRP (AlexFurina, 3.7.1_12).
+Installed for the test with `dd` from a running TWRP or OrangeFox.
+
+The full table was first run on the previous build (SHA-256 `fa07ca41…46c3f`), where the accent
+was drawn blue. This build adds the color patch described in `patches/README.md`; on it the
+accent color, touch, flashlight, ADB and MTP were checked again.
 
 Not tested: flashing the `.img.tar` with Odin, installing the OrangeFox `.zip`, restoring a backup,
 installing a ROM, an encrypted ROM, the stock partition table, SM-A530N and SM-A530W.

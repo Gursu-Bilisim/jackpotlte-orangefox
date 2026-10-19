@@ -10,7 +10,7 @@ its own `TEST-NOTES.md`.
 ## What works
 
 ADB, MTP, battery indicator, brightness, USB-OTG, microSD, EFS backup, flashlight, reboot to
-Download mode, `/data` on an unencrypted ROM.
+Download mode, `/data` on an unencrypted ROM, the orange OrangeFox accent color.
 
 ## Read this before flashing
 
@@ -67,6 +67,19 @@ The order matters when the source tree holds other OrangeFox devices:
 - The `OF_` values are compiled in through `bootable/recovery/orangefox.mk`, which Kati only
   re-reads when a makefile changes, hence the `touch`.
 
+On an incremental build, TWRP's `relink_libraries` step does not copy a rebuilt
+`libminuitwrp.so` into the ramdisk, so the image keeps the old library. After a change to
+`bootable/recovery/minuitwrp`, build it on its own and copy it before packing:
+
+```bash
+mka adbd libminuitwrp
+cp out/target/product/jackpotlte/system/lib64/libminuitwrp.so \
+   out/target/product/jackpotlte/recovery/root/system/lib64/
+mka recoveryimage
+```
+
+`recovery-inspect.ps1` reports an old library under "Display".
+
 The tree builds `recovery.img` with its own `mkboot/bootimg.mk` (Samsung `--dt` image and the
 `SEANDROIDENFORCE` trailer). The build stops if the image does not fit the recovery partition.
 
@@ -76,6 +89,12 @@ The prebuilt kernel is not compressed (24288872 bytes) and the DT adds 882688 by
 ramdisk has about 14.6 MB. `vendorsetup.sh` enables `FOX_DRASTIC_SIZE_REDUCTION`, and
 `BoardConfig.mk` and `device.mk` drop the extra language fonts and fastbootd (Samsung
 bootloaders have no fastboot mode).
+
+### Colors
+
+The framebuffer is BGRA (`red.offset` 16). `TARGET_RECOVERY_PIXEL_FORMAT := ABGR_8888` makes
+TWRP's text and PNG drawing match it; OrangeFox's SVG, `tint` and shape code needs the patch in
+[patches/](patches/README.md), otherwise the orange accent is drawn blue.
 
 ### Flashlight
 
@@ -89,7 +108,7 @@ flash on this device is a single file, `/sys/class/camera/flash/rear_flash` (1 o
 ### recovery-inspect.ps1
 
 Lists what a jackpotlte recovery image contains: image layout (kernel, DT, trailer, size),
-device files for the Treble layout, battery, flashlight and USB. Accepts the `.img`, the Odin
+device files for the Treble layout, display colors, battery, flashlight and USB. Accepts the `.img`, the Odin
 `.tar` or the OrangeFox `.zip`. Works in Windows PowerShell 5.1 and PowerShell 7.
 
 ```
