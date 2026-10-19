@@ -1,3 +1,22 @@
+diff --git a/gui/nanosvg.cpp b/gui/nanosvg.cpp
+index 8d0206d6..24aceb29 100644
+--- a/gui/nanosvg.cpp
++++ b/gui/nanosvg.cpp
+@@ -71,6 +71,14 @@ int res_create_svg_surface(const char* name, float scale, gr_surface* pSurface)
+ 
+ 	nsvgRasterize(rast, image, 0, 0, scale, (unsigned char*)img, w, h, w*4);
+ 
++	// nanosvg writes RGBA bytes; match the byte order the rest of the UI draws in
++	if (res_swap_red_blue()) {
++		for (int i = 0; i < w * h; i++) {
++			uint32_t p = img[i];
++			img[i] = (p & 0xFF00FF00) | ((p & 0xFF) << 16) | ((p >> 16) & 0xFF);
++		}
++	}
++
+ 	GGLSurface *surface;
+ 	surface = (GGLSurface *)malloc(sizeof(GGLSurface));
+ 	memset(surface, 0, sizeof(GGLSurface));
 diff --git a/gui/objects.hpp b/gui/objects.hpp
 index bdf35bd6..bffbb9d0 100644
 --- a/gui/objects.hpp
@@ -30,6 +49,36 @@ index ba8e43ae..729e227b 100755
  int GUIPatternPassword::InDot(int x, int y)
  {
  	for (size_t i = 0; i < mGridSize * mGridSize; ++i) {
+diff --git a/gui/resources.cpp b/gui/resources.cpp
+index 127f7416..dca305bc 100755
+--- a/gui/resources.cpp
++++ b/gui/resources.cpp
+@@ -253,6 +253,11 @@ ImageResource::ImageResource(xml_node<>* node, ZipArchiveHandle pZip)
+ 	COLOR color = LoadAttrColor(node, "tint", &found_color_attr);
+ 
+ 	if (found_color_attr && temp_surface) {
++		if (res_swap_red_blue()) {
++			const auto r = color.red;
++			color.red = color.blue;
++			color.blue = r;
++		}
+ 		GGLSurface *surface = (GGLSurface*)temp_surface;
+ 		int size = surface->width * surface->height;
+ 		uint32_t *data = (uint32_t *)surface->data;
+@@ -281,6 +286,13 @@ uint32_t* createShape(int w, int h, int radius, int stroke, COLOR color, Rounded
+     if (!data) return nullptr; // Handle allocation failure
+     memset(data, 0, malloc_size);
+ 
++    // the pixels below are packed as RGBA; match the byte order the UI draws in
++    if (res_swap_red_blue()) {
++        const auto r = color.red;
++        color.red = color.blue;
++        color.blue = r;
++    }
++
+     const uint32_t px = (color.alpha << 24) | (color.blue << 16) | (color.green << 8) | color.red;
+ 
+     // --- Simplification for non-rounded, filled rectangle ---
 diff --git a/gui/theme/portrait_hdpi/themes/navbar.xml b/gui/theme/portrait_hdpi/themes/navbar.xml
 index bd964771..1d101faf 100644
 --- a/gui/theme/portrait_hdpi/themes/navbar.xml
@@ -47,6 +96,38 @@ index bd964771..1d101faf 100644
  	</variables>
  </recovery>
 \ No newline at end of file
+diff --git a/minuitwrp/include/minuitwrp/minui.h b/minuitwrp/include/minuitwrp/minui.h
+index 5dbbf726..c46bb204 100644
+--- a/minuitwrp/include/minuitwrp/minui.h
++++ b/minuitwrp/include/minuitwrp/minui.h
+@@ -100,6 +100,9 @@ int ev_has_mouse(void);
+ // Returns 0 if no error, else negative.
+ int res_create_surface(const char* name, gr_surface* pSurface);
+ int res_get_pixel_format(void);
++// 1 when this build draws with red and blue swapped (RECOVERY_ABGR). Code that
++// writes RGBA pixels itself (SVG raster, tint, shapes) has to swap them too.
++int res_swap_red_blue(void);
+ void res_free_surface(gr_surface surface);
+ int res_scale_surface(gr_surface source, gr_surface* destination, float scale_w, float scale_h);
+ 
+diff --git a/minuitwrp/resources.cpp b/minuitwrp/resources.cpp
+index 2db6536d..52025913 100644
+--- a/minuitwrp/resources.cpp
++++ b/minuitwrp/resources.cpp
+@@ -465,3 +465,13 @@ int res_get_pixel_format(void) {
+ #endif
+     return GGL_PIXEL_FORMAT_BGRA_8888;
+ }
++
++// With RECOVERY_ABGR, gr_color() and the PNG loader (png_set_bgr) put blue in the
++// first byte of each pixel, and the framebuffer is filled in that order.
++int res_swap_red_blue(void) {
++#if defined(RECOVERY_ABGR)
++    return 1;
++#else
++    return 0;
++#endif
++}
 diff --git a/partitionmanager.cpp b/partitionmanager.cpp
 index b52a7d49..dc8a7895 100755
 --- a/partitionmanager.cpp

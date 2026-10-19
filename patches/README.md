@@ -10,9 +10,20 @@ TWRP and OrangeFox are licensed under the GNU General Public License, version 3 
 are these changes (see `COPYING`).
 
 The same source tree builds [Gursu-Bilisim/tucana-orangefox](https://github.com/Gursu-Bilisim/tucana-orangefox)
-and [Gursu-Bilisim/bramble-orangefox](https://github.com/Gursu-Bilisim/bramble-orangefox). The
-patch holds the changes made for those devices; jackpotlte needs none of its own, and the image
-in each release is built with this patch applied.
+and [Gursu-Bilisim/bramble-orangefox](https://github.com/Gursu-Bilisim/bramble-orangefox), so the
+patch also holds the changes made for those devices. The image in each release is built with this
+patch applied.
+
+- `minuitwrp/resources.cpp`, `minuitwrp/include/minuitwrp/minui.h`, `gui/nanosvg.cpp`,
+  `gui/resources.cpp` (made for jackpotlte): new function `res_swap_red_blue()`, which returns 1
+  when the build uses `TARGET_RECOVERY_PIXEL_FORMAT := ABGR_8888`. With that setting `gr_color()`
+  and the PNG loader (`png_set_bgr`) put blue in the first byte of each pixel, but the SVG
+  rasterizer, the `tint` attribute and `createShape()` put red there. On jackpotlte (fbdev,
+  `red.offset` 16) the orange accent, the logo and the shapes were drawn blue while text and PNG
+  icons had the right colors. These three places now swap red and blue when the function
+  returns 1. Builds with another pixel format are unchanged.
+
+Changes made for tucana and bramble:
 
 - `partitionmanager.cpp`: when the ROM's fstab is copied to `/etc/additional.fstab`,
   `/dev/block/bootdevice/by-name/` paths are rewritten to `/dev/block/by-name/`. jackpotlte
