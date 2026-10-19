@@ -14,6 +14,9 @@ if [ "$TARGET_PRODUCT" = "twrp_jackpotlte" ]; then
 	# 1080x2220 panel
 	export OF_SCREEN_H=2220
 
+	# Flashlight bridge, see init.recovery.samsungexynos7885.rc
+	export OF_FL_PATH1="/tmp/flashlight"
+
 	# RECOVERY is 39845888 bytes and the uncompressed prebuilt kernel alone
 	# is 24288872 bytes, so the ramdisk has to stay small.
 	export FOX_DRASTIC_SIZE_REDUCTION=1

@@ -15,3 +15,8 @@ service hwservicemanager /system/bin/hwservicemanager
 
 on boot
     start health-hal-2-1
+
+    # OrangeFox flashlight: expose the Samsung rear flash as an LED directory
+    mkdir /tmp/flashlight
+    write /tmp/flashlight/max_brightness "1"
+    symlink /sys/class/camera/flash/rear_flash /tmp/flashlight/brightness
