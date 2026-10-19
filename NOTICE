@@ -1,0 +1,53 @@
+jackpotlte-orangefox
+Copyright 2026 kgursu (Gursu-Bilisim)
+
+This repository is a fork of AlexFurina's TWRP device tree for the Samsung Galaxy
+A8 2018, android_device_samsung_jackpotlte, branch android-12.1, commit e0531ef.
+https://github.com/AlexFurina/android_device_samsung_jackpotlte
+The tree's history goes back to Gabriel2392 (Gabriel260), with commits by
+AlexFurina, ExtremeXT, adeilmazk and micky387; the git log lists them. The
+build files carry the Android Open Source Project Apache License 2.0 header.
+
+Files written for this repository are licensed under the Apache License,
+Version 2.0 (see LICENSE): vendorsetup.sh, patch-check.ps1,
+recovery-inspect.ps1, release.sh and test-notes.md. Our changes to
+BoardConfig.mk, device.mk, mkboot/bootimg.mk and
+recovery/root/init.recovery.samsungexynos7885.rc are under the same license;
+the git log shows them.
+
+Parts from others keep their own authors and licenses:
+
+* Device tree files from the fork (Android.mk, AndroidProducts.mk,
+  BoardConfig.mk, device.mk, twrp_jackpotlte.mk, system.prop,
+  mkboot/bootimg.mk, recovery/root/*)
+  AlexFurina, Gabriel2392 and the contributors above. The build files are
+  under the Apache License 2.0 (AOSP header). The files in recovery/root are
+  Android Open Source Project and TWRP configuration files (init and ueventd
+  scripts, event-log-tags, task_profiles.json, VINTF manifests) adapted for
+  this device, Apache License 2.0.
+
+* prebuilt/Image, prebuilt/dtb
+  Linux kernel 4.4.302 for the Exynos 7885 and its device tree, built by
+  AlexFurina ("Linux version 4.4.302 (Furina@Love) ... Sat Oct 18 00:00:00
+  KST 2025"), taken unmodified from the fork. GPL-2.0. The kernel is based on
+  Samsung's SM-A530F kernel source, published at
+  https://opensource.samsung.com.
+
+* mkboot/mkbootimg
+  Prebuilt x86-64 mkbootimg with Samsung --dt support, taken unmodified from
+  the fork. Android Open Source Project tool, Apache License 2.0.
+
+* Flashlight bridge in init.recovery.samsungexynos7885.rc
+  The approach (a /tmp directory with max_brightness and a brightness link to
+  the Samsung flash node) follows saadelasfur's
+  orangefox_device_samsung_m52xq, branch fox_12.1. No files copied.
+  https://github.com/saadelasfur/orangefox_device_samsung_m52xq
+
+* patch-check.ps1: the LZMA decoder (class FoxLzma)
+  Ported to C# from LzmaSpec.cpp, the reference LZMA decoder by Igor Pavlov,
+  which is in the public domain.
+
+* OrangeFox Recovery / TWRP
+  The recovery is built from OrangeFox fox_12.1 (based on TWRP), licensed
+  under GPL-3.0-or-later. Our changes to it are published in patches/ under
+  the same license.

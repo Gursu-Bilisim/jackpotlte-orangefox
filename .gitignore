@@ -1,0 +1,7 @@
+# Local notes and dumps used while porting
+reference/
+*.pre-*
+*.bak*
+# Partition backups: EFS and CPEFS images never go into this repository
+*.img
+*.bin
