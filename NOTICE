@@ -44,7 +44,8 @@ Parts from others keep their own authors and licenses:
   orangefox_device_samsung_m52xq, branch fox_12.1. No files copied.
   https://github.com/saadelasfur/orangefox_device_samsung_m52xq
 
-* patch-check.ps1: the LZMA decoder (class FoxLzma)
+* patch-check.ps1 (class FoxLzma) and recovery-inspect.ps1 (class
+  FoxInspectLzma): the LZMA decoder
   Ported to C# from LzmaSpec.cpp, the reference LZMA decoder by Igor Pavlov,
   which is in the public domain.
 

@@ -107,9 +107,13 @@ flash on this device is a single file, `/sys/class/camera/flash/rear_flash` (1 o
 
 ### recovery-inspect.ps1
 
-Lists what a jackpotlte recovery image contains: image layout (kernel, DT, trailer, size),
-device files for the Treble layout, display colors, battery, flashlight and USB. Accepts the `.img`, the Odin
-`.tar` or the OrangeFox `.zip`. Works in Windows PowerShell 5.1 and PowerShell 7.
+Lists what an OrangeFox image contains, without flashing it. The same script is shared by the
+`Gursu-Bilisim` OrangeFox repositories (bramble, tucana, jackpotlte): it reads the device from the
+image's `prop.default` and runs that device's checks; images of other devices get the common
+checks (image layout, recovery files, display colors and `libminuitwrp.so`, USB). For jackpotlte it
+also checks the Samsung image layout (kernel, DT, `SEANDROIDENFORCE`, partition size), the device
+files for the Treble layout, battery and flashlight. Accepts the `.img`, the Odin `.tar` or the
+OrangeFox `.zip`. Works in Windows PowerShell 5.1 and PowerShell 7.
 
 ```
 powershell -ExecutionPolicy Bypass -File recovery-inspect.ps1 -Img <img | tar | zip>

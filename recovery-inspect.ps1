@@ -1,29 +1,31 @@
 # recovery-inspect.ps1
-# Lists what a jackpotlte (Samsung Galaxy A8 2018, SM-A530F) OrangeFox recovery image
-# contains, without flashing it. Works in Windows PowerShell 5.1+ and PowerShell 7
-# (Windows, Linux).
+# Lists what an OrangeFox recovery image contains, without flashing it: boot image
+# layout, device files, display, USB and, for devices that decrypt /data, the
+# decryption chain. One script for every Gursu-Bilisim OrangeFox device; the device is
+# read from the image's prop.default. Images of other devices get the common checks.
+# Works in Windows PowerShell 5.1+ and PowerShell 7 (Windows, Linux).
 #
 # Usage:
-#   powershell -ExecutionPolicy Bypass -File recovery-inspect.ps1 -Img <recovery.img | .tar | OrangeFox zip>
+#   powershell -ExecutionPolicy Bypass -File recovery-inspect.ps1 -Img <image>
+#   <image>: recovery.img, vendor_boot.img, Odin .tar or OrangeFox .zip
 #
-# Each check prints OK or MISSING; INFO lines describe the build. This image is made for
-# the Treble partition layout (physical SYSTEM, VENDOR, PRODUCT, ODM, PRISM, OPTICS) and
-# does not decrypt /data.
+# Device profiles: bramble (vendor_boot), tucana (recovery), jackpotlte (RECOVERY).
+# Each check prints OK or MISSING; INFO lines describe the build.
 
 param(
   [Parameter(Mandatory = $true)][string]$Img
 )
 
+$ScriptVersion = '2026.10.19'
 Add-Type -AssemblyName System.IO.Compression
 Add-Type -AssemblyName System.IO.Compression.FileSystem
 
-$RecoveryPartitionSize = 39845888   # RECOVERY on SM-A530F
-if (-not ([System.Management.Automation.PSTypeName]'FoxUnpack3').Type) {
+if (-not ([System.Management.Automation.PSTypeName]'FoxInspect').Type) {
 Add-Type -TypeDefinition @'
 using System;
 using System.IO;
 using System.IO.Compression;
-public static class FoxUnpack3 {
+public static class FoxInspect {
   static void Grow(ref byte[] b, int need) {
     if (need <= b.Length) return;
     int n = b.Length * 2; while (n < need) n *= 2;
@@ -79,7 +81,7 @@ public static class FoxUnpack3 {
       }
       Array.Resize(ref dst, op); return dst;
     }
-    if (FoxLzma.IsLzma(src, start, len)) return FoxLzma.Decode(src, start, len);
+    if (FoxInspectLzma.IsLzma(src, start, len)) return FoxInspectLzma.Decode(src, start, len);
     if (len >= 2 && src[start] == 0x1F && src[start + 1] == 0x8B) {
       using (var ms = new MemoryStream(src, start, len))
       using (var gz = new GZipStream(ms, CompressionMode.Decompress))
@@ -112,7 +114,7 @@ public static class FoxUnpack3 {
 }
 // LZMA ("alone" / .lzma) decoder, ported from the public domain LzmaSpec.cpp
 // reference decoder by Igor Pavlov. C# 5 compatible (Windows PowerShell 5.1 Add-Type).
-public static class FoxLzma {
+public static class FoxInspectLzma {
   sealed class Dec {
     byte[] src; int ip, end;
     uint range, code;
@@ -283,6 +285,7 @@ function Get-ImageBytes([string]$path) {
     $zf = [IO.Compression.ZipFile]::OpenRead($full)
     try {
       $e = $zf.GetEntry('recovery.img')
+      if (-not $e) { $e = $zf.GetEntry('vendor_boot.img') }
       if (-not $e) { $e = $zf.Entries | Where-Object { $_.FullName -like '*.img' } | Select-Object -First 1 }
       if (-not $e) { throw 'No .img found in the zip' }
       $ms = New-Object IO.MemoryStream
@@ -310,44 +313,72 @@ function Get-ImageBytes([string]$path) {
   return ,$d
 }
 
-function Read-BootHeader([byte[]]$d) {
+function Read-ImageHeader([byte[]]$d) {
   $magic = [Text.Encoding]::ASCII.GetString($d, 0, 8)
-  $other = 'This recovery-inspect.ps1 is the jackpotlte version. For other devices use the recovery-inspect.ps1 from that device''s release.'
-  if ($magic -eq 'VNDRBOOT') { throw "This is a vendor_boot image; jackpotlte has its recovery in a recovery.img. $other" }
-  if ($magic -ne 'ANDROID!') { throw "Not an Android boot image (a jackpotlte recovery.img starts with ANDROID!). $other" }
+  $al = { param($x, $pg) [long]([math]::Ceiling($x / $pg) * $pg) }
+  $avb = ($d.Length -ge 64 -and [Text.Encoding]::ASCII.GetString($d, $d.Length - 64, 4) -eq 'AVBf')
+  if ($magic -eq 'VNDRBOOT') {
+    $hv = [BitConverter]::ToUInt32($d, 8)
+    if ($hv -ne 3 -and $hv -ne 4) { throw "vendor_boot header v$hv is not supported" }
+    $page = [BitConverter]::ToUInt32($d, 12)
+    $rs = [BitConverter]::ToUInt32($d, 24)
+    $hs = [BitConverter]::ToUInt32($d, 2096)
+    $dtb = [BitConverter]::ToUInt32($d, 2100)
+    $rOff = & $al $hs $page
+    return [pscustomobject]@{
+      Type = 'vendor_boot'; Version = $hv; PageSize = $page; KernelSize = 0; KernelOffset = 0
+      RamdiskOffset = [int]$rOff; RamdiskSize = [int]$rs; DtbSize = $dtb; SamsungDt = 0
+      Used = $rOff + (& $al $rs $page) + (& $al $dtb $page); AvbFooter = $avb; Trailer = ''
+      Cmdline = [Text.Encoding]::ASCII.GetString($d, 28, 2048).Split([char]0)[0]
+    }
+  }
+  if ($magic -ne 'ANDROID!') { throw "Not an Android boot, recovery or vendor_boot image (first bytes $(([BitConverter]::ToString($d, 0, 8)) -replace '-', ' '))" }
   $hv = [BitConverter]::ToUInt32($d, 40)
-  if ($hv -ge 1 -and $hv -le 4) { throw "Boot image header v$hv; a jackpotlte recovery.img uses header v0 with a Samsung DT. $other" }
+  if ($hv -eq 3 -or $hv -eq 4) {
+    $page = 4096
+    $ks = [BitConverter]::ToUInt32($d, 8)
+    $rs = [BitConverter]::ToUInt32($d, 12)
+    $kOff = [long]$page
+    $rOff = $kOff + (& $al $ks $page)
+    return [pscustomobject]@{
+      Type = 'boot'; Version = $hv; PageSize = $page; KernelSize = $ks; KernelOffset = [int]$kOff
+      RamdiskOffset = [int]$rOff; RamdiskSize = [int]$rs; DtbSize = 0; SamsungDt = 0
+      Used = $rOff + (& $al $rs $page); AvbFooter = $avb; Trailer = ''
+      Cmdline = [Text.Encoding]::ASCII.GetString($d, 44, 1536).Split([char]0)[0]
+    }
+  }
+  # Header v0, v1 or v2. Samsung v0 images keep a DT size where the header version is.
   $ks = [BitConverter]::ToUInt32($d, 8)
   $rs = [BitConverter]::ToUInt32($d, 16)
   $ss = [BitConverter]::ToUInt32($d, 24)
   $page = [BitConverter]::ToUInt32($d, 36)
-  $dt = [BitConverter]::ToUInt32($d, 40)
-  if ($dt -le 4) { $dt = 0 }   # a header version, not a Samsung DT size
-  $al = { param($x) [long]([math]::Ceiling($x / $page) * $page) }
+  $samsungDt = 0
+  if ($hv -gt 4) { $samsungDt = $hv; $hv = 0 }
   $kOff = [long]$page
-  $rOff = $kOff + (& $al $ks)
-  $used = $rOff + (& $al $rs) + (& $al $ss) + (& $al $dt)
+  $rOff = $kOff + (& $al $ks $page)
+  $used = $rOff + (& $al $rs $page) + (& $al $ss $page) + (& $al $samsungDt $page)
+  $dtb = 0
+  if ($hv -ge 1) { $used += & $al ([BitConverter]::ToUInt32($d, 1632)) $page }
+  if ($hv -ge 2) { $dtb = [BitConverter]::ToUInt32($d, 1648); $used += & $al $dtb $page }
+  $trailer = ''
+  if ($used + 16 -le $d.Length) { $trailer = [Text.Encoding]::ASCII.GetString($d, [int]$used, 16) }
   [pscustomobject]@{
-    PageSize      = $page
-    KernelSize    = $ks
-    RamdiskOffset = [int]$rOff
-    RamdiskSize   = [int]$rs
-    DtSize        = $dt
-    Used          = $used
-    Cmdline       = [Text.Encoding]::ASCII.GetString($d, 64, 512).Split([char]0)[0]
-    Trailer       = if ($used + 16 -le $d.Length) { [Text.Encoding]::ASCII.GetString($d, [int]$used, 16) } else { '' }
-    Kernel        = [FoxUnpack3]::KernelRelease([FoxUnpack3]::Decompress($d, [int]$kOff, [int]$ks))
+    Type = 'boot'; Version = $hv; PageSize = $page; KernelSize = $ks; KernelOffset = [int]$kOff
+    RamdiskOffset = [int]$rOff; RamdiskSize = [int]$rs; DtbSize = $dtb; SamsungDt = $samsungDt
+    Used = $used; AvbFooter = $avb; Trailer = $trailer
+    Cmdline = ([Text.Encoding]::ASCII.GetString($d, 64, 512).Split([char]0)[0] + [Text.Encoding]::ASCII.GetString($d, 608, 1024).Split([char]0)[0])
   }
 }
 
 function Read-Ramdisk([byte[]]$d, $h) {
-  $raw = [FoxUnpack3]::Decompress($d, $h.RamdiskOffset, $h.RamdiskSize)
+  $raw = [FoxInspect]::Decompress($d, $h.RamdiskOffset, $h.RamdiskSize)
   $magic = [Text.Encoding]::ASCII.GetString($raw, 0, 6)
   if ($magic -ne '070701' -and $magic -ne '070702') { throw 'Ramdisk is not a newc cpio archive after decompression' }
   $files = @{}
   $p = 0
-  while ($p -lt $raw.Length) {
+  while ($p + 110 -le $raw.Length) {
     $hdr = [Text.Encoding]::ASCII.GetString($raw, $p, 110)
+    if ($hdr.Substring(0, 6) -ne '070701' -and $hdr.Substring(0, 6) -ne '070702') { break }
     $mode  = [Convert]::ToInt32($hdr.Substring(14, 8), 16)
     $fsize = [Convert]::ToInt32($hdr.Substring(54, 8), 16)
     $nsize = [Convert]::ToInt32($hdr.Substring(94, 8), 16)
@@ -366,93 +397,243 @@ function Get-Text($rd, [string]$name) {
   if (-not $f) { return $null }
   return [Text.Encoding]::ASCII.GetString($rd.Data, $f[0], $f[1])
 }
+function Test-Bytes($rd, [string]$name, [string]$text) {
+  $f = $rd.Files[$name]
+  if (-not $f) { return $false }
+  return [FoxInspect]::Contains($rd.Data, $f[0], $f[1], [Text.Encoding]::ASCII.GetBytes($text))
+}
+function Find-File($rd, [string[]]$names) {
+  foreach ($n in $names) { if ($rd.Files.ContainsKey($n)) { return $n } }
+  return $null
+}
+function Get-Missing($rd, [string]$dir, [string[]]$names) {
+  return @($names | Where-Object { -not $rd.Files.ContainsKey("$dir/$_") })
+}
 
 $results = New-Object System.Collections.Generic.List[object]
 function Add-Result([string]$group, [string]$check, [bool]$ok, [string]$detail) {
-  $results.Add([pscustomobject]@{ Group = $group; Check = $check; Result = $(if ($ok) { 'OK' } else { 'MISSING' }); Detail = $detail })
+  $results.Add([pscustomobject]@{ Group = $group; Check = $check; Result = $(if ($ok) { 'OK' } else { 'MISSING' }); Detail = $detail; Seq = $results.Count })
 }
 function Add-Info([string]$group, [string]$check, [string]$detail) {
-  $results.Add([pscustomobject]@{ Group = $group; Check = $check; Result = 'INFO'; Detail = $detail })
+  $results.Add([pscustomobject]@{ Group = $group; Check = $check; Result = 'INFO'; Detail = $detail; Seq = $results.Count })
 }
 
+# ---------------------------------------------------------------------------
+# Device profiles. Each one names the partition the image is installed to, its
+# size, and the checks specific to that device. Unknown devices get the common
+# checks only.
+# ---------------------------------------------------------------------------
+$Profiles = @{
+  'bramble' = @{
+    Name = 'Google Pixel 4a 5G (bramble)'; Partition = 'vendor_boot'; PartitionSize = 100663296
+    Critical = @('Decryption', 'Titan M')
+    Summary = 'all decryption and Titan M components present. Check the ROM build with patch-check.ps1 before flashing.'
+    Checks = {
+      Add-Result 'Boot' 'boot device on cmdline' ($h.Cmdline -match 'androidboot\.boot_devices=soc/1d84000\.ufshc') 'androidboot.boot_devices=soc/1d84000.ufshc'
+      Add-Result 'Boot' 'DTB present' ($h.DtbSize -gt 0) "$($h.DtbSize) bytes"
+      Add-Result 'Boot' 'first stage fstab' ($rd.Files.ContainsKey('first_stage_ramdisk/fstab.sm7250')) 'first_stage_ramdisk/fstab.sm7250'
+      $load = Get-Text $rd 'lib/modules/modules.load'
+      $listed = @()
+      if ($load) { $listed = @($load -split "`r?`n" | ForEach-Object { $_.Trim() } | Where-Object { $_ } | ForEach-Object { (Split-Path $_ -Leaf) -replace '\.ko$', '' }) }
+      $absent = @($listed | Where-Object {
+        -not ($rd.Files.ContainsKey("lib/modules/$_.ko") -or $rd.Files.ContainsKey("lib/modules/$($_ -replace '-', '_').ko") -or $rd.Files.ContainsKey("lib/modules/$($_ -replace '_', '-').ko"))
+      })
+      Add-Result 'Boot' 'every module in modules.load present' ([bool]$load -and $listed.Count -gt 0 -and $absent.Count -eq 0) $(if (-not $load) { 'lib/modules/modules.load not found' } elseif ($absent) { 'missing: ' + ($absent[0..4] -join ', ') } else { "$($listed.Count) modules" })
+
+      Add-Result 'Decryption' '/dev/block/bootdevice link created by init' ($rcText -match '(?m)symlink\s+\S+\s+/dev/block/bootdevice\s*$') ''
+      Add-Result 'Decryption' 'modem firmware mount (slot suffix)' ($rcText -match 'modem\$\{ro\.boot\.slot_suffix\}\s+/vendor/firmware_mnt') '/vendor/firmware_mnt'
+      Add-Result 'Decryption' 'qcom decrypt init (twrp-common)' ($rd.Files.ContainsKey('init.recovery.qcom_decrypt.rc')) 'init.recovery.qcom_decrypt.rc'
+      $n = Find-File $rd @('system/bin/prepdecrypt.sh', 'vendor/bin/prepdecrypt.sh'); Add-Result 'Decryption' 'prepdecrypt script' ([bool]$n) $n
+      $n = Find-File $rd @('system/bin/qseecomd', 'vendor/bin/qseecomd'); Add-Result 'Decryption' 'qseecomd' ([bool]$n) $n
+      $n = Find-File $rd @('vendor/lib64/libQSEEComAPI.so', 'system/lib64/libQSEEComAPI.so'); Add-Result 'Decryption' 'QSEECom library' ([bool]$n) $n
+      $missing = Get-Missing $rd 'vendor/lib64' @('librpmb.so', 'libssd.so', 'libops.so', 'libGPreqcancel.so', 'libGPreqcancel_svc.so', 'libdrmtime.so', 'libtime_genoff.so', 'libqisl.so', 'libsecureui.so')
+      Add-Result 'Decryption' 'qseecomd listener libraries' ($missing.Count -eq 0) $(if ($missing) { 'missing: ' + ($missing -join ', ') } else { '9 listeners' })
+      $n = Find-File $rd @('system/bin/android.hardware.keymaster@4.0-service-qti', 'vendor/bin/hw/android.hardware.keymaster@4.0-service-qti'); Add-Result 'Decryption' 'QTI keymaster 4.0 service' ([bool]$n) $n
+      $n = Find-File $rd @('system/bin/android.hardware.gatekeeper@1.0-service-qti', 'vendor/bin/hw/android.hardware.gatekeeper@1.0-service-qti'); Add-Result 'Decryption' 'QTI gatekeeper 1.0 service' ([bool]$n) $n
+      Add-Result 'Decryption' 'QTI gatekeeper implementation' ($rd.Files.ContainsKey('vendor/lib64/hw/android.hardware.gatekeeper@1.0-impl-qti.so')) 'vendor/lib64/hw'
+      $manVer = if ($man) { ([regex]::Match($man, 'manifest\s+version="([^"]+)"')).Groups[1].Value } else { '' }
+      Add-Result 'Decryption' 'device VINTF manifest readable by recovery' ([bool]$man -and $manVer -and [double]$manVer -le 4) $(if ($man) { "manifest version $manVer" } else { 'vendor/etc/vintf/manifest.xml not found' })
+      Add-Result 'Decryption' 'manifest declares keymaster' ([bool]$man -and $man -match 'android\.hardware\.keymaster') ''
+      Add-Result 'Decryption' 'manifest declares keystore2 (AIDL)' ([bool]$man -and $man -match 'android\.system\.keystore2') ''
+      $fman = Get-Text $rd 'system/etc/vintf/manifest.xml'
+      Add-Result 'Decryption' 'framework manifest declares hidl manager' ([bool]$fman -and $fman -match 'android\.hidl\.manager') 'needed by keystore2'
+
+      Add-Result 'Titan M' 'Titan M init' ($rd.Files.ContainsKey('init.recovery.titan.rc')) 'init.recovery.titan.rc'
+      $missing = Get-Missing $rd 'system/bin' @('vndservicemanager', 'citadeld', 'android.hardware.weaver@1.0-service.citadel', 'linker64_a16')
+      Add-Result 'Titan M' 'services and Android 16 linker' ($missing.Count -eq 0) $(if ($missing) { 'missing: ' + ($missing -join ', ') } else { 'vndservicemanager, citadeld, weaver, linker64_a16' })
+      $missing = Get-Missing $rd 'system/lib64/a16' @('ld-android.so', 'libc.so', 'libdl.so', 'liblog.so', 'libm.so', 'libbinder_ndk.so', 'libselinux.so', 'libvndksupport.so', 'libpcre2.so', 'libpackagelistparser.so', 'libdl_android.so')
+      Add-Result 'Titan M' 'Android 16 runtime libraries' ($missing.Count -eq 0) $(if ($missing) { 'missing: ' + ($missing -join ', ') } else { 'system/lib64/a16 (11)' })
+      Add-Result 'Titan M' 'libapexsupport' ($rd.Files.ContainsKey('vendor/lib64/libapexsupport.so')) 'vendor/lib64'
+      Add-Result 'Titan M' 'manifest declares weaver' ([bool]$man -and $man -match 'android\.hardware\.weaver') ''
+      Add-Result 'Titan M' 'manifest declares authsecret' ([bool]$man -and $man -match 'android\.hardware\.authsecret') 'weaver aborts without it'
+
+      $bootImpl = 'system/lib64/hw/android.hardware.boot@1.0-impl-1.2-qti.so'
+      Add-Result 'Boot control' 'QTI boot control 1.2 implementation' ($rd.Files.ContainsKey($bootImpl)) $bootImpl
+      Add-Result 'Boot control' 'boot HAL service without vendor library path' ($rcText -match '(?m)^service\s+boot-hal-1-2\s+/system/bin/android\.hardware\.boot@1\.2-service') 'init.recovery.bramble.rc'
+      Add-Result 'Boot control' 'slot count ignores the boot link' (Test-Bytes $rd $bootImpl "`0boot_`0") 'BOOT_IMG_PTN_NAME "boot_"'
+
+      Add-Result 'Recovery' 'battery read from sysfs' (Test-Bytes $rd 'system/bin/recovery' '/sys/class/power_supply/battery/capacity') 'TW_USE_LEGACY_BATTERY_SERVICES'
+      Add-Result 'Recovery' 'bootdevice paths rewritten in ROM fstab' (Test-Bytes $rd 'system/bin/recovery' 'Rewrote bootdevice paths') 'recovery binary'
+      Add-Result 'Recovery' 'touch event debug logging off' (-not (Test-Bytes $rd 'system/bin/recovery' 'TOUCH_START:')) 'gui.cpp _EVENT_LOGGING'
+      Add-Result 'USB' 'MTP function linked in mtp,adb mode' ([bool]$usb -and $usb -match 'functions/mtp\.gs0\s+\S+/configs/b\.1/f') ''
+    }
+  }
+
+  'tucana' = @{
+    Name = 'Xiaomi Mi Note 10 / CC9 Pro (tucana)'; Partition = 'recovery'; PartitionSize = 134217728
+    Critical = @('Decryption')
+    Summary = 'all decryption components present. Check the ROM build with patch-check.ps1 before flashing.'
+    Checks = {
+      Add-Result 'Boot' 'boot image header v2' ($h.Type -eq 'boot' -and $h.Version -eq 2) "v$($h.Version)"
+      Add-Result 'Boot' 'DTB present' ($h.DtbSize -gt 0) "$($h.DtbSize) bytes"
+      Add-Result 'Boot' 'boot device on cmdline' ($h.Cmdline -match 'androidboot\.bootdevice=1d84000\.ufshc') 'androidboot.bootdevice=1d84000.ufshc'
+
+      Add-Result 'Decryption' 'qcom decrypt init (twrp-common)' ($rd.Files.ContainsKey('init.recovery.qcom_decrypt.rc')) 'init.recovery.qcom_decrypt.rc'
+      Add-Result 'Decryption' 'qcom FBE decrypt init' ($rd.Files.ContainsKey('init.recovery.qcom_decrypt.fbe.rc')) 'init.recovery.qcom_decrypt.fbe.rc'
+      $n = Find-File $rd @('system/bin/prepdecrypt.sh', 'vendor/bin/prepdecrypt.sh'); Add-Result 'Decryption' 'prepdecrypt script' ([bool]$n) $n
+      $n = Find-File $rd @('system/bin/qseecomd', 'vendor/bin/qseecomd'); Add-Result 'Decryption' 'qseecomd' ([bool]$n) $n
+      $n = Find-File $rd @('system/bin/android.hardware.keymaster@4.1-service-qti', 'system/bin/android.hardware.keymaster@4.0-service-qti')
+      Add-Result 'Decryption' 'QTI keymaster service' ([bool]$n) $n
+      Add-Result 'Decryption' 'QTI keymaster library' ($rd.Files.ContainsKey('vendor/lib64/libqtikeymaster4.so')) 'vendor/lib64/libqtikeymaster4.so'
+      $n = Find-File $rd @('system/bin/android.hardware.gatekeeper@1.0-service-qti', 'vendor/bin/hw/android.hardware.gatekeeper@1.0-service-qti'); Add-Result 'Decryption' 'QTI gatekeeper 1.0 service' ([bool]$n) $n
+      Add-Result 'Decryption' 'QTI gatekeeper implementation' ($rd.Files.ContainsKey('vendor/lib64/hw/android.hardware.gatekeeper@1.0-impl-qti.so')) 'vendor/lib64/hw'
+      Add-Result 'Decryption' 'manifest declares keymaster' ([bool]$man -and $man -match 'android\.hardware\.keymaster') 'vendor/etc/vintf/manifest.xml'
+      Add-Result 'Decryption' 'manifest declares gatekeeper' ([bool]$man -and $man -match 'android\.hardware\.gatekeeper') ''
+
+      Add-Result 'Battery' 'health HAL 2.1 service' ($rd.Files.ContainsKey('system/bin/android.hardware.health@2.1-service')) 'system/bin'
+    }
+  }
+
+  'jackpotlte' = @{
+    Name = 'Samsung Galaxy A8 2018 (SM-A530F, jackpotlte), Treble partition layout'; Partition = 'RECOVERY'; PartitionSize = 39845888
+    Critical = @()
+    Summary = 'all checks OK. Image for the Treble partition layout; /data is not decrypted.'
+    Checks = {
+      Add-Result 'Boot' 'kernel' ($h.KernelSize -gt 0 -and [bool]$kernel) $kernel
+      Add-Result 'Boot' 'DT appended (mkbootimg --dt)' ($h.SamsungDt -gt 0) "$($h.SamsungDt) bytes"
+      Add-Result 'Boot' 'cmdline androidboot.hardware' ($h.Cmdline -match 'androidboot\.hardware=samsungexynos7885') 'samsungexynos7885'
+      Add-Result 'Boot' 'SEANDROIDENFORCE after the image' ($h.Trailer -eq 'SEANDROIDENFORCE') 'Samsung bootloader warns without it'
+
+      Add-Result 'Recovery' 'device init' ($rd.Files.ContainsKey('init.recovery.samsungexynos7885.rc')) 'init.recovery.samsungexynos7885.rc'
+      Add-Result 'Recovery' 'device ueventd rules' ($rd.Files.ContainsKey('ueventd.samsungexynos7885.rc')) 'ueventd.samsungexynos7885.rc'
+      Add-Result 'Recovery' 'lowercase by-name links' ($rd.Files.ContainsKey('system/bin/link.sh')) 'system/bin/link.sh'
+      $flags = Get-Text $rd 'system/etc/twrp.flags'
+      $want = @('SYSTEM', 'VENDOR', 'PRODUCT', 'ODM', 'PRISM', 'OPTICS', 'EFS')
+      $absent = @($want | Where-Object { -not ($flags -and $flags -match "by-name/$_\b") })
+      Add-Result 'Recovery' 'twrp.flags: Treble partitions and EFS' ($absent.Count -eq 0) $(if ($absent) { 'missing: ' + ($absent -join ', ') } else { $want -join ', ' })
+      $fstab = Get-Text $rd 'system/etc/recovery.fstab'
+      Add-Result 'Recovery' 'recovery.fstab: /data and /cache' ([bool]$fstab -and $fstab -match 'by-name/USERDATA\s+/data' -and $fstab -match 'by-name/CACHE\s+/cache') 'USERDATA, CACHE (ext4 and f2fs)'
+
+      $hman = Get-Text $rd 'vendor/etc/vintf/manifest/android.hardware.health@2.1.xml'
+      Add-Result 'Battery' 'health HAL 2.1 service' ($rd.Files.ContainsKey('system/bin/android.hardware.health@2.1-service')) 'system/bin'
+      Add-Result 'Battery' 'manifest declares health 2.1' ([bool]$hman -and $hman -match '@2\.1::IHealth') ''
+
+      $rc = Get-Text $rd 'init.recovery.samsungexynos7885.rc'
+      Add-Result 'Flashlight' 'rear flash bridged to /tmp/flashlight' ([bool]$rc -and $rc -match 'mkdir\s+/tmp/flashlight' -and $rc -match 'symlink\s+/sys/class/camera/flash/rear_flash\s+/tmp/flashlight/brightness') 'OF_FL_PATH1=/tmp/flashlight'
+      Add-Result 'Flashlight' 'max_brightness written' ([bool]$rc -and $rc -match 'write\s+/tmp/flashlight/max_brightness\s+"?1"?') '1'
+      Add-Result 'Display' 'pixel format ABGR_8888' ($pixFmt -eq 'ABGR_8888') 'framebuffer is BGRA (red.offset 16)'
+
+      $km = @($rd.Files.Keys | Where-Object { $_ -match 'keymaster|gatekeeper|mcDriverDaemon|mobicore' })
+      if ($km.Count -eq 0) { Add-Info 'Decryption' 'keymaster, gatekeeper, Trustonic services' 'not included; this image does not decrypt /data' }
+      else { Add-Info 'Decryption' 'keymaster, gatekeeper, Trustonic services' ($km -join ', ') }
+    }
+  }
+}
+
+# ---------------------------------------------------------------------------
 $bytes = Get-ImageBytes $Img
-$h = Read-BootHeader $bytes
+$h = Read-ImageHeader $bytes
 $rd = Read-Ramdisk $bytes $h
 
 $props = Get-Text $rd 'prop.default'
+if (-not $props) { $props = Get-Text $rd 'system/etc/prop.default' }
 function Get-Prop([string]$key) {
   if (-not $props) { return '' }
   return ([regex]::Match($props, "(?m)^$([regex]::Escape($key))=(.*)$")).Groups[1].Value.Trim()
 }
-$device = Get-Prop 'ro.product.device'
-if (-not $device) { $device = Get-Prop 'ro.product.system.device' }
+$device = ''
+foreach ($k in @('ro.product.device', 'ro.product.vendor.device', 'ro.build.product', 'ro.product.system.device')) {
+  $device = Get-Prop $k
+  if ($device) { break }
+}
+$profile = $Profiles[$device]
+$pixFmt = Get-Prop 'ro.minui.pixel_format'
+$kernel = $null
+if ($h.KernelSize -gt 0) {
+  try { $kernel = [FoxInspect]::KernelRelease([FoxInspect]::Decompress($bytes, $h.KernelOffset, [int]$h.KernelSize)) } catch { $kernel = $null }
+}
+$rcText = ($rd.Files.Keys | Where-Object { $_ -like '*.rc' } | ForEach-Object { Get-Text $rd $_ }) -join "`n"
+$man = Get-Text $rd 'vendor/etc/vintf/manifest.xml'
 
-Write-Host "Image          : $(Split-Path $Img -Leaf)"
-Write-Host "Header         : Android boot image v0, page $($h.PageSize), kernel $($h.KernelSize), ramdisk $($h.RamdiskSize), DT $($h.DtSize) bytes"
-Write-Host "Kernel         : $(if ($h.Kernel) { $h.Kernel } else { '(release not found)' })"
-Write-Host "Device         : $device, build $(Get-Prop 'ro.build.display.id')"
+$hdrText = if ($h.Type -eq 'vendor_boot') { "vendor_boot v$($h.Version), page $($h.PageSize), ramdisk $($h.RamdiskSize), DTB $($h.DtbSize) bytes" }
+           elseif ($h.SamsungDt -gt 0) { "boot image v0 (Samsung), page $($h.PageSize), kernel $($h.KernelSize), ramdisk $($h.RamdiskSize), DT $($h.SamsungDt) bytes" }
+           else { "boot image v$($h.Version), page $($h.PageSize), kernel $($h.KernelSize), ramdisk $($h.RamdiskSize), DTB $($h.DtbSize) bytes" }
+Write-Host "recovery-inspect $ScriptVersion"
+Write-Host "Image          : $(Split-Path $Img -Leaf) ($($bytes.Length) bytes)"
+Write-Host "Header         : $hdrText, AVB footer $(if ($h.AvbFooter) { 'yes' } else { 'no' })"
+if ($h.KernelSize -gt 0) { Write-Host "Kernel         : $(if ($kernel) { $kernel } else { '(release not found)' })" }
+Write-Host "Device         : $(if ($device) { $device } else { '(not found)' })$(if ($profile) { ', ' + $profile.Name } else { ', no device profile: common checks only' })"
+Write-Host "Android        : $(Get-Prop 'ro.build.version.release'), security patch $(Get-Prop 'ro.build.version.security_patch')"
 Write-Host "OrangeFox base : $(Get-Prop 'ro.build.fox_codebase')"
 Write-Host ''
 
-# Image layout (Samsung bootloader, RECOVERY partition)
-Add-Result 'Boot' 'kernel' ($h.KernelSize -gt 0 -and [bool]$h.Kernel) $h.Kernel
-Add-Result 'Boot' 'DT appended (mkbootimg --dt)' ($h.DtSize -gt 0) "$($h.DtSize) bytes"
-Add-Result 'Boot' 'cmdline androidboot.hardware' ($h.Cmdline -match 'androidboot\.hardware=samsungexynos7885') 'samsungexynos7885'
-Add-Result 'Boot' 'SEANDROIDENFORCE after the image' ($h.Trailer -eq 'SEANDROIDENFORCE') 'Samsung bootloader warns without it'
-Add-Result 'Boot' 'fits the RECOVERY partition' ($h.Used + 16 -le $RecoveryPartitionSize) "$($h.Used + 16) of $RecoveryPartitionSize bytes"
-
-# Recovery for the Treble layout
-Add-Result 'Recovery' 'built for jackpotlte' ($device -eq 'jackpotlte') "ro.product.device=$device"
-Add-Result 'Recovery' 'device init' ($rd.Files.ContainsKey('init.recovery.samsungexynos7885.rc')) 'init.recovery.samsungexynos7885.rc'
-Add-Result 'Recovery' 'device ueventd rules' ($rd.Files.ContainsKey('ueventd.samsungexynos7885.rc')) 'ueventd.samsungexynos7885.rc'
-Add-Result 'Recovery' 'lowercase by-name links' ($rd.Files.ContainsKey('system/bin/link.sh')) 'system/bin/link.sh'
-$flags = Get-Text $rd 'system/etc/twrp.flags'
-$want = @('SYSTEM', 'VENDOR', 'PRODUCT', 'ODM', 'PRISM', 'OPTICS', 'EFS')
-$absent = @($want | Where-Object { -not ($flags -and $flags -match "by-name/$_\b") })
-Add-Result 'Recovery' 'twrp.flags: Treble partitions and EFS' ($absent.Count -eq 0) $(if ($absent) { 'missing: ' + ($absent -join ', ') } else { $want -join ', ' })
-$fstab = Get-Text $rd 'system/etc/recovery.fstab'
-Add-Result 'Recovery' 'recovery.fstab: /data and /cache' ([bool]$fstab -and $fstab -match 'by-name/USERDATA\s+/data' -and $fstab -match 'by-name/CACHE\s+/cache') 'USERDATA, CACHE (ext4 and f2fs)'
+# Common checks
+if ($profile) {
+  $size = if ($h.AvbFooter) { $bytes.Length } else { $h.Used + $(if ($h.Trailer -eq 'SEANDROIDENFORCE') { 16 } else { 0 }) }
+  Add-Result 'Image' "fits the $($profile.Partition) partition" ($size -le $profile.PartitionSize) "$size of $($profile.PartitionSize) bytes"
+}
+Add-Result 'Recovery' 'device name in prop.default' ([bool]$device) $device
+Add-Result 'Recovery' 'recovery binary' ($rd.Files.ContainsKey('system/bin/recovery')) 'system/bin/recovery'
 Add-Result 'Recovery' 'OrangeFox files' (@($rd.Files.Keys -like 'FFiles/*').Count -gt 0) 'FFiles'
 
-# Battery
-$hman = Get-Text $rd 'vendor/etc/vintf/manifest/android.hardware.health@2.1.xml'
-Add-Result 'Battery' 'health HAL 2.1 service' ($rd.Files.ContainsKey('system/bin/android.hardware.health@2.1-service')) 'system/bin'
-Add-Result 'Battery' 'manifest declares health 2.1' ([bool]$hman -and $hman -match '@2\.1::IHealth') ''
-
-# Flashlight
-$rc = Get-Text $rd 'init.recovery.samsungexynos7885.rc'
-Add-Result 'Flashlight' 'rear flash bridged to /tmp/flashlight' ([bool]$rc -and $rc -match 'mkdir\s+/tmp/flashlight' -and $rc -match 'symlink\s+/sys/class/camera/flash/rear_flash\s+/tmp/flashlight/brightness') 'OF_FL_PATH1=/tmp/flashlight'
-Add-Result 'Flashlight' 'max_brightness written' ([bool]$rc -and $rc -match 'write\s+/tmp/flashlight/max_brightness\s+"?1"?') '1'
-
-# Display colors: the framebuffer is BGRA (red.offset 16); ABGR_8888 plus the
-# res_swap_red_blue() patch draw the orange accent orange instead of blue
-$fmt = Get-Prop 'ro.minui.pixel_format'
-Add-Result 'Display' 'pixel format ABGR_8888' ($fmt -eq 'ABGR_8888') "ro.minui.pixel_format=$fmt"
-$lib = $rd.Files['system/lib64/libminuitwrp.so']
-$swap = $false
-if ($lib) {
-  $libText = [Text.Encoding]::ASCII.GetString($rd.Data, $lib[0], $lib[1])
-  $swap = $libText.Contains('res_swap_red_blue')
+# Display: OrangeFox draws SVGs, tint and shapes itself; with ABGR_8888 it needs the
+# res_swap_red_blue() patch, and a recovery built with that patch needs the matching
+# libminuitwrp.so (TWRP's relink step can leave an old copy in the ramdisk).
+$lib = 'system/lib64/libminuitwrp.so'
+if (-not $rd.Files.ContainsKey($lib)) { $lib = 'system/lib/libminuitwrp.so' }
+$libOk = $rd.Files.ContainsKey($lib)
+$libSwap = $libOk -and (Test-Bytes $rd $lib 'res_swap_red_blue')
+$recPacked = Test-Bytes $rd 'system/bin/recovery' 'UPX!'
+$recSwap = Test-Bytes $rd 'system/bin/recovery' 'res_swap_red_blue'
+Add-Info 'Display' 'pixel format' $(if ($pixFmt) { "ro.minui.pixel_format=$pixFmt" } else { 'not set' })
+Add-Result 'Display' 'libminuitwrp.so in the ramdisk' $libOk $lib
+if ($pixFmt -eq 'ABGR_8888') {
+  Add-Result 'Display' 'accent color patch (ABGR_8888)' $libSwap $(if ($libSwap) { 'res_swap_red_blue' } else { 'old libminuitwrp, accent drawn blue' })
+} elseif ($recPacked) {
+  Add-Info 'Display' 'libminuitwrp matches recovery' "recovery is UPX-packed; libminuitwrp $(if ($libSwap) { 'has' } else { 'does not have' }) res_swap_red_blue"
+} else {
+  Add-Result 'Display' 'libminuitwrp matches recovery' ((-not $recSwap) -or $libSwap) $(if ($recSwap -and -not $libSwap) { 'recovery needs res_swap_red_blue, libminuitwrp is older' } elseif ($recSwap) { 'both have res_swap_red_blue' } else { 'recovery built without the accent color patch' })
 }
-Add-Result 'Display' 'libminuitwrp with the accent color patch' $swap $(if (-not $lib) { 'libminuitwrp.so missing' } elseif ($swap) { 'res_swap_red_blue' } else { 'old library, accent drawn blue' })
 
 # USB
 $usb = Get-Text $rd 'init.recovery.usb.rc'
 Add-Result 'USB' 'configfs USB gadget' ([bool]$usb -and $usb -match '/config/usb_gadget') ''
 Add-Result 'USB' 'MTP function' ([bool]$usb -and $usb -match 'functions/mtp\.gs0') ''
 
-# Decryption (not part of this build)
-$km = @($rd.Files.Keys | Where-Object { $_ -match 'keymaster|gatekeeper|mcDriverDaemon|mobicore' })
-if ($km.Count -eq 0) {
-  Add-Info 'Decryption' 'keymaster, gatekeeper, Trustonic services' 'not included; this image does not decrypt /data'
-} else {
-  Add-Info 'Decryption' 'keymaster, gatekeeper, Trustonic services' ($km -join ', ')
-}
+if ($profile) { & $profile.Checks }
 
-$results | Format-Table -AutoSize Group, Check, Result, Detail | Out-String -Width 200 | Write-Host
-$bad = @($results | Where-Object { $_.Result -eq 'MISSING' }).Count
-if ($bad -eq 0) {
-  Write-Host 'RESULT: all checks OK. Image for the Treble partition layout; /data is not decrypted.' -ForegroundColor Green
+$groupOrder = @('Image', 'Boot', 'Recovery', 'Display', 'Decryption', 'Titan M', 'Boot control', 'Battery', 'Flashlight', 'USB')
+$results | Sort-Object @{ Expression = { $i = [array]::IndexOf($groupOrder, $_.Group); if ($i -lt 0) { 99 } else { $i } } }, Seq |
+  Format-Table -AutoSize Group, Check, Result, Detail | Out-String -Width 200 | Write-Host
+
+$notOk = @($results | Where-Object { $_.Result -eq 'MISSING' })
+if (-not $profile) {
+  if ($notOk.Count -eq 0) { Write-Host 'RESULT: common checks OK. No device profile for this image, so device files were not checked.' -ForegroundColor Green }
+  else { Write-Host "RESULT: $($notOk.Count) common check(s) MISSING; see the table above." -ForegroundColor Yellow }
 } else {
-  Write-Host "RESULT: $bad check(s) MISSING; see the table above." -ForegroundColor Yellow
+  $crit = @($notOk | Where-Object { $profile.Critical -contains $_.Group })
+  $other = @($notOk | Where-Object { $profile.Critical -notcontains $_.Group })
+  if ($crit.Count -gt 0) {
+    Write-Host "RESULT: $($crit.Count) $($profile.Critical -join ' or ') component(s) missing; this image is not expected to decrypt /data." -ForegroundColor Yellow
+  } elseif ($other.Count -eq 0) {
+    Write-Host "RESULT: $($profile.Summary)" -ForegroundColor Green
+  }
+  if ($other.Count -gt 0) {
+    if ($profile.Critical.Count -eq 0) {
+      Write-Host "RESULT: $($other.Count) check(s) MISSING; see the table above." -ForegroundColor Yellow
+    } else {
+      if ($crit.Count -eq 0) { Write-Host "RESULT: all $($profile.Critical -join ' and ') components present." -ForegroundColor Green }
+      Write-Host "NOTE: $($other.Count) other check(s) MISSING; see the table above." -ForegroundColor Yellow
+    }
+  }
 }
