@@ -31,7 +31,8 @@ Parts from others keep their own authors and licenses:
   AlexFurina ("Linux version 4.4.302 (Furina@Love) ... Sat Oct 18 00:00:00
   KST 2025"), taken unmodified from the fork. GPL-2.0. The kernel is based on
   Samsung's SM-A530F kernel source, published at
-  https://opensource.samsung.com.
+  https://opensource.samsung.com. The exact source has been requested from
+  the author: https://github.com/AlexFurina/android_device_samsung_jackpotlte/issues/1
 
 * mkboot/mkbootimg
   Prebuilt x86-64 mkbootimg with Samsung --dt support, taken unmodified from
