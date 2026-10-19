@@ -311,7 +311,12 @@ function Get-ImageBytes([string]$path) {
 }
 
 function Read-BootHeader([byte[]]$d) {
-  if ([Text.Encoding]::ASCII.GetString($d, 0, 8) -ne 'ANDROID!') { throw 'Not an Android boot image (jackpotlte recovery.img starts with ANDROID!)' }
+  $magic = [Text.Encoding]::ASCII.GetString($d, 0, 8)
+  $other = 'This recovery-inspect.ps1 is the jackpotlte version. For other devices use the recovery-inspect.ps1 from that device''s release.'
+  if ($magic -eq 'VNDRBOOT') { throw "This is a vendor_boot image; jackpotlte has its recovery in a recovery.img. $other" }
+  if ($magic -ne 'ANDROID!') { throw "Not an Android boot image (a jackpotlte recovery.img starts with ANDROID!). $other" }
+  $hv = [BitConverter]::ToUInt32($d, 40)
+  if ($hv -ge 1 -and $hv -le 4) { throw "Boot image header v$hv; a jackpotlte recovery.img uses header v0 with a Samsung DT. $other" }
   $ks = [BitConverter]::ToUInt32($d, 8)
   $rs = [BitConverter]::ToUInt32($d, 16)
   $ss = [BitConverter]::ToUInt32($d, 24)
