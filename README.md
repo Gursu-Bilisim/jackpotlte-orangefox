@@ -9,8 +9,14 @@ its own `TEST-NOTES.md`.
 
 ## What works
 
-ADB, MTP, battery indicator, brightness, USB-OTG, microSD, EFS backup, flashlight, reboot to
-Download mode, `/data` on an unencrypted ROM, the orange OrangeFox accent color.
+ADB, MTP, battery indicator, brightness, microSD, EFS backup, flashlight, reboot to Download mode,
+`/data` on an unencrypted ROM, the orange OrangeFox accent color.
+
+- USB storage: a USB stick or card reader on an OTG adapter is listed as USB-OTG on the Mount page
+  and as USB Storage in the Files menu, and can hold backups. FAT32, exFAT (`exfat-fuse`) and
+  NTFS (`ntfs-3g`) are mounted. The phone has one USB port, so while a stick is attached there is
+  no MTP or adb over USB: OrangeFox turns MTP off when the stick is attached, and after the stick
+  is removed the computer sees the phone again.
 
 ## Read this before flashing
 

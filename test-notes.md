@@ -9,7 +9,7 @@ Tested by the maintainer before publishing. Update this file for every release.
 | ROM | One UI port from the Galaxy S23 FE (SM-S711B), Android 16, `S711BXXSFFZD2` (XROM-V16.1), vendor from SM-A530N Android 9 (`A530NKSU9CUL1`) |
 | /data | ext4, not encrypted |
 | Recovery kernel | 4.4.302 (prebuilt in this tree) |
-| Tested image | SHA-256 `48d14b18ea95451a0663b7f658338d38b858fdc6684c1b3d87f9b785882dd76d` |
+| Tested image | SHA-256 `fa794b9a36d646d263c2e579008aabb0662fcfe5d0ea1dafa269492e44cbd07e` |
 
 | Test | Result | Notes |
 |---|---|---|
@@ -20,7 +20,10 @@ Tested by the maintainer before publishing. Update this file for every release.
 | MTP | OK | |
 | Battery indicator | OK | health HAL 2.1 |
 | Brightness | OK | |
-| USB-OTG | OK | backup written to `/usb-otg/Fox/BACKUPS` |
+| USB storage in the Files menu | OK | `/usb_otg`, listed as USB Storage |
+| USB storage: FAT32, exFAT, NTFS | OK | all three mounted |
+| Backup and restore of BOOT on an NTFS stick | OK, see note | first boot after the restore stopped at the Android logo, a reboot started normally |
+| MTP with a stick attached | OK | OrangeFox turns MTP off; after removing the stick the computer sees the phone again |
 | microSD | OK | |
 | EFS backup | OK | 6 MB |
 | Flashlight | OK | menu button and Power + Volume Up |
@@ -30,9 +33,15 @@ Tested by the maintainer before publishing. Update this file for every release.
 
 Installed for the test with `dd` from a running TWRP or OrangeFox.
 
-The full table was first run on the previous build (SHA-256 `fa07ca41…46c3f`), where the accent
-was drawn blue. This build adds the color patch described in `patches/README.md`; on it the
-accent color, touch, flashlight, ADB and MTP were checked again.
+This build moves USB storage from `/usb-otg` to `/usb_otg` (Files menu) with automatic file system
+detection, and takes the shared `bootable/recovery` patch of bramble and tucana (no effect on
+jackpotlte). On it USB storage, backup and restore, MTP, the accent color, the bottom menu, the
+lock-screen slider and ADB were checked; the other rows come from the previous builds
+(`48d14b18…dd76d`, `fa07ca41…46c3f`); the device files they depend on did not change.
 
-Not tested: flashing the `.img.tar` with Odin, installing the OrangeFox `.zip`, restoring a backup,
-installing a ROM, an encrypted ROM, the stock partition table, SM-A530N and SM-A530W.
+Restore note: after BOOT was restored from the NTFS stick, the first boot stopped at the Android
+logo and a second reboot started normally. The cause was not isolated. The ported ROM on this
+device already shows other faults, so it may come from the ROM.
+
+Not tested: flashing the `.img.tar` with Odin, installing the OrangeFox `.zip`, restoring other
+partitions than BOOT, installing a ROM, an encrypted ROM, the stock partition table, SM-A530N and SM-A530W.
