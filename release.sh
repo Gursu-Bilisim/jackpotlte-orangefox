@@ -26,6 +26,20 @@ if ! git -C "$FOX_TREE/bootable/recovery" diff "$BASE" | cmp -s - "$TREE/patches
 fi
 
 REPO=Gursu-Bilisim/jackpotlte-orangefox
+
+# The release tag must point at the device tree the image was built from. gh creates a missing
+# tag from the default branch, so pass the commit explicitly and require it to be on GitHub.
+REMOTE=${REMOTE:-$(git -C "$TREE" remote -v | awk '/Gursu-Bilisim\/jackpotlte-orangefox/ && /\(push\)/ {print $1; exit}')}
+[ -n "$REMOTE" ] || { echo "No git remote points at $REPO. Set REMOTE=<remote name>." >&2; exit 1; }
+HEAD=$(git -C "$TREE" rev-parse HEAD)
+if [ -n "$(git -C "$TREE" status --porcelain --untracked-files=no)" ]; then
+  echo "The device tree has uncommitted changes. Commit and push them first." >&2; exit 1
+fi
+git -C "$TREE" fetch -q "$REMOTE" || { echo "git fetch $REMOTE failed." >&2; exit 1; }
+if [ -z "$(git -C "$TREE" branch -r --contains "$HEAD" | grep -F "$REMOTE/")" ]; then
+  echo "Commit $HEAD is not on $REPO. Push it first." >&2; exit 1
+fi
+
 TAG="v$(date +%Y.%m.%d)${1:+-$1}"
 NAME="OrangeFox-jackpotlte-$TAG-treble"
 W=$(mktemp -d)
@@ -60,5 +74,5 @@ NOTES
 cat "$TREE/test-notes.md"
 } > "$W/notes.md"
 gh release create "$TAG" "$W"/*.img "$W"/*.tar "$W"/*.zip "$W"/*.ps1 "$W/TEST-NOTES.md" "$W/SHA256SUMS" \
-  --repo "$REPO" --title "$TAG" --notes-file "$W/notes.md"
+  --repo "$REPO" --target "$HEAD" --title "$TAG" --notes-file "$W/notes.md"
 echo "Published: $TAG"

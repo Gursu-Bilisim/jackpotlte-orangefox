@@ -1,3 +1,20 @@
+diff --git a/data.cpp b/data.cpp
+index 25b883e7..68563168 100755
+--- a/data.cpp
++++ b/data.cpp
+@@ -808,8 +808,10 @@ void DataManager::SetDefaultValues()
+   mConst.SetValue(OF_STATUS_PLACEMENT_S, of_status_placement);
+   mConst.SetValue(OF_CENTER_Y_S, of_center_y);
+   
+-  mConst.SetValue(OF_SCREEN_H_S, OF_SCREEN_H);
+-  mData.SetValue(OF_SCREEN_NAV_H_S, OF_SCREEN_H); // mData for nide navbar function
++  int of_screen_h = atoi(OF_SCREEN_H) - OF_SCREEN_BOTTOM_INSET;
++  mConst.SetValue("screen_full_h", OF_SCREEN_H); // panel height, used for theme scaling
++  mConst.SetValue(OF_SCREEN_H_S, of_screen_h);
++  mData.SetValue(OF_SCREEN_NAV_H_S, of_screen_h); // mData for nide navbar function
+   
+   mConst.SetValue(OF_STATUS_H_S, OF_STATUS_H);
+   mConst.SetValue(OF_HIDE_NOTCH_S, OF_HIDE_NOTCH);
 diff --git a/gui/nanosvg.cpp b/gui/nanosvg.cpp
 index 8d0206d6..24aceb29 100644
 --- a/gui/nanosvg.cpp
@@ -29,6 +46,19 @@ index bdf35bd6..bffbb9d0 100644
  	virtual std::string GetObjectType() const { return "GUIPatternPassword"; }
  	bool MoveSelectionNext();
  	bool MoveSelectionPrevious();
+diff --git a/gui/pages.cpp b/gui/pages.cpp
+index b1825757..42e22938 100755
+--- a/gui/pages.cpp
++++ b/gui/pages.cpp
+@@ -935,7 +935,7 @@ int PageSet::LoadDetails(LoadingContext& ctx, xml_node<>* root)
+ 				xml_attribute<>* height_res_attr = resolution->first_attribute("height");
+ 				height = atoi(height_res_attr->value());
+ 			} else {
+-				DataManager::GetValue("screen_original_h", height);
++				DataManager::GetValue("screen_full_h", height);
+ 			}
+ 			xml_attribute<>* noscale_attr = resolution->first_attribute("noscaling");
+ 			if (width_attr && !noscale_attr) {
 diff --git a/gui/patternpassword.cpp b/gui/patternpassword.cpp
 index ba8e43ae..729e227b 100755
 --- a/gui/patternpassword.cpp
@@ -79,6 +109,38 @@ index 127f7416..dca305bc 100755
      const uint32_t px = (color.alpha << 24) | (color.blue << 16) | (color.green << 8) | color.red;
  
      // --- Simplification for non-rounded, filled rectangle ---
+diff --git a/gui/theme/portrait_hdpi/pages/templates/templates.xml b/gui/theme/portrait_hdpi/pages/templates/templates.xml
+index 9dd03df7..5e13a931 100644
+--- a/gui/theme/portrait_hdpi/pages/templates/templates.xml
++++ b/gui/theme/portrait_hdpi/pages/templates/templates.xml
+@@ -853,6 +853,14 @@
+ 				<action function="set">of_show_pass=1</action>
+ 			</button>
+ 
++			<!-- The eye icon is 64x46 px; this gives it a fingertip-sized touch area -->
++			<button>
++				<condition var1="of_show_pass" var2="0"/>
++				<fill color="%transparent%"/>
++				<placement x="%pass_show_touch_x%" y="%pass_show_touch_y%" w="144" h="144"/>
++				<action function="set">of_show_pass=1</action>
++			</button>
++
+ 			<fill color="%accent%">
+ 				<condition var1="tw_password_fail" op="!=" var2="1"/>
+ 				<placement x="%col1_x_caption%" y="%row3_2a_y%" w="%input_backup_w%" h="%input_line_height%" placement="1"/>
+diff --git a/gui/theme/portrait_hdpi/resources/vars.xml b/gui/theme/portrait_hdpi/resources/vars.xml
+index 7dcffc29..49b432f7 100644
+--- a/gui/theme/portrait_hdpi/resources/vars.xml
++++ b/gui/theme/portrait_hdpi/resources/vars.xml
+@@ -608,6 +608,8 @@
+ 		<variable name="row3_1a_y" value="690+%cutout_w%"/>
+ 		<variable name="row3_2_y" value="720+%cutout_w%"/>
+ 		<variable name="row3_2a_y" value="750+%cutout_w%"/>
++		<variable name="pass_show_touch_x" value="%ab_btn1_x%-72"/>
++		<variable name="pass_show_touch_y" value="%row3_2_y%-72"/>
+ 		<variable name="row3_3_y" value="780+%cutout_w%"/>
+ 		<variable name="row3_3a_y" value="810+%cutout_w%"/>
+ 		<variable name="row4_1_y" value="840+%cutout_w%"/>
 diff --git a/gui/theme/portrait_hdpi/themes/navbar.xml b/gui/theme/portrait_hdpi/themes/navbar.xml
 index bd964771..1d101faf 100644
 --- a/gui/theme/portrait_hdpi/themes/navbar.xml
@@ -128,6 +190,25 @@ index 2db6536d..52025913 100644
 +    return 0;
 +#endif
 +}
+diff --git a/orangefox.mk b/orangefox.mk
+index d1e5046f..2d0a4fbe 100644
+--- a/orangefox.mk
++++ b/orangefox.mk
+@@ -237,6 +237,14 @@ else
+     LOCAL_CFLAGS += -DOF_SCREEN_H='"1920"'
+ endif
+ 
++# Space in pixels kept free at the bottom of the screen (curved or rounded bottom edge).
++# The theme places its bottom elements this much higher; scaling still uses OF_SCREEN_H.
++ifneq ($(OF_SCREEN_BOTTOM_INSET),)
++    LOCAL_CFLAGS += -DOF_SCREEN_BOTTOM_INSET=$(OF_SCREEN_BOTTOM_INSET)
++else
++    LOCAL_CFLAGS += -DOF_SCREEN_BOTTOM_INSET=0
++endif
++
+ ifneq ($(OF_STATUS_H),)
+     LOCAL_CFLAGS += -DOF_STATUS_H='"$(OF_STATUS_H)"'
+ else
 diff --git a/partitionmanager.cpp b/partitionmanager.cpp
 index b52a7d49..dc8a7895 100755
 --- a/partitionmanager.cpp

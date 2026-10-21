@@ -7,10 +7,15 @@
 #     patch level are read from the image header.
 #     Samsung images built with "mkbootimg --dt" (e.g. jackpotlte) keep the DT size where
 #     newer headers keep the header version; they are read as header v0.
-#   - vendor_boot.img (header "VNDRBOOT", e.g. bramble): Android version and patch
-#     level are read from prop.default in the ramdisk. The kernel modules in the
-#     ramdisk are also compared with the ROM kernel, because vendor_boot is used for
-#     the normal Android boot as well.
+#   - vendor_boot.img (header "VNDRBOOT", e.g. bramble): the kernel modules in the
+#     ramdisk are compared with the ROM kernel, because vendor_boot is used for the
+#     normal Android boot as well; this comparison gives the verdict. The clang version
+#     of the modules is compared with the kernel banner too: the same release string
+#     built with another compiler is a rebuilt kernel. Android version and patch level
+#     from prop.default decide the DECRYPT line.
+#     With an A/B package (-Zip), the script also reads the payload.bin manifest and says
+#     what a ROM install leaves in vendor_boot (ROM INSTALL line): the LineageOS Updater
+#     and OrangeFox both write the package to the inactive slot.
 #
 # Supported inputs:
 #   - A-only OTA zip with boot.img at its root (tucana, most retrofit devices)
@@ -25,6 +30,7 @@
 #   powershell -ExecutionPolicy Bypass -File patch-check.ps1 -Zip <ota.zip> [-RecoveryImg <recovery.img>]
 #   powershell -ExecutionPolicy Bypass -File patch-check.ps1 -BootImg <boot.img> [-RecoveryImg <recovery.img>]
 #   powershell -ExecutionPolicy Bypass -File patch-check.ps1 -RecoveryImg <recovery.img>
+# -RecoveryImg also accepts an OrangeFox installer zip; the image inside it is checked.
 # Optional: -PayloadTool <path to a payload tool .exe>
 #           -GoDumper <path to payload-dumper-go.exe>
 #           -MikDir <path to your Multi Image Kitchen folder>
@@ -134,6 +140,27 @@ public static class FoxUnpack3 {
       int e = s; while (e < k.Length && k[e] != (byte)' ' && k[e] != 0) e++;
       if (e + 1 < k.Length && k[e] == (byte)' ' && k[e + 1] == (byte)'(')
         return System.Text.Encoding.ASCII.GetString(k, s, e - s);
+    }
+    return null;
+  }
+  // Returns the clang version named in the kernel banner, or null.
+  public static string KernelCompiler(byte[] k) {
+    byte[] pat = System.Text.Encoding.ASCII.GetBytes("Linux version ");
+    byte[] cv = System.Text.Encoding.ASCII.GetBytes("clang version ");
+    for (int i = 0; i + pat.Length + 2 < k.Length; i++) {
+      int j = 0; while (j < pat.Length && k[i + j] == pat[j]) j++;
+      if (j < pat.Length) continue;
+      int s = i + pat.Length;
+      if (k[s] < (byte)'0' || k[s] > (byte)'9') continue;
+      int end = Math.Min(k.Length - cv.Length, s + 400);
+      for (int q = s; q < end; q++) {
+        int t = 0; while (t < cv.Length && k[q + t] == cv[t]) t++;
+        if (t < cv.Length) continue;
+        int a = q + cv.Length, b = a;
+        while (b < k.Length && ((k[b] >= (byte)'0' && k[b] <= (byte)'9') || k[b] == (byte)'.')) b++;
+        return b > a ? System.Text.Encoding.ASCII.GetString(k, a, b - a) : null;
+      }
+      return null;
     }
     return null;
   }
@@ -312,6 +339,68 @@ public static class FoxLzma {
 '@
 }
 
+if (-not ([System.Management.Automation.PSTypeName]'FoxPayload1').Type) {
+Add-Type -TypeDefinition @'
+using System;
+using System.IO;
+using System.Collections.Generic;
+using System.Text;
+
+// Partition names from the manifest of an A/B payload.bin (update_engine format,
+// DeltaArchiveManifest field 13 "partitions", PartitionUpdate field 1 "partition_name").
+public static class FoxPayload1 {
+  static byte[] ReadN(Stream s, long n) {
+    byte[] b = new byte[n]; long r = 0;
+    while (r < n) { int k = s.Read(b, (int)r, (int)Math.Min(n - r, 1 << 20)); if (k <= 0) throw new EndOfStreamException(); r += k; }
+    return b;
+  }
+  static ulong BE(byte[] b, int o, int n) { ulong v = 0; for (int i = 0; i < n; i++) v = (v << 8) | b[o + i]; return v; }
+  static ulong Var(byte[] b, ref int p) {
+    ulong v = 0; int sh = 0;
+    while (true) { byte x = b[p++]; v |= (ulong)(x & 0x7F) << sh; if ((x & 0x80) == 0) return v; sh += 7; }
+  }
+  public static string[] Partitions(Stream s) {
+    byte[] h = ReadN(s, 20);
+    if (Encoding.ASCII.GetString(h, 0, 4) != "CrAU") throw new InvalidDataException("not a payload.bin");
+    ulong ver = BE(h, 4, 8);
+    ulong msize = BE(h, 12, 8);
+    if (msize == 0 || msize > (64UL << 20)) throw new InvalidDataException("manifest size " + msize);
+    if (ver >= 2) ReadN(s, 4);
+    byte[] m = ReadN(s, (long)msize);
+    List<string> names = new List<string>();
+    int p = 0;
+    while (p < m.Length) {
+      ulong key = Var(m, ref p); int field = (int)(key >> 3); int wt = (int)(key & 7);
+      if (wt == 0) { Var(m, ref p); }
+      else if (wt == 1) { p += 8; }
+      else if (wt == 5) { p += 4; }
+      else if (wt == 2) {
+        int len = (int)Var(m, ref p); int end = p + len;
+        if (field == 13) {
+          int q = p;
+          while (q < end) {
+            ulong k2 = Var(m, ref q); int f2 = (int)(k2 >> 3); int w2 = (int)(k2 & 7);
+            if (w2 == 0) { Var(m, ref q); }
+            else if (w2 == 1) { q += 8; }
+            else if (w2 == 5) { q += 4; }
+            else if (w2 == 2) {
+              int l2 = (int)Var(m, ref q);
+              if (f2 == 1) { names.Add(Encoding.UTF8.GetString(m, q, l2)); break; }
+              q += l2;
+            }
+            else throw new InvalidDataException("wire type " + w2);
+          }
+        }
+        p = end;
+      }
+      else throw new InvalidDataException("wire type " + wt);
+    }
+    return names.ToArray();
+  }
+}
+'@
+}
+
 $workDirGiven = $PSBoundParameters.ContainsKey('WorkDir')
 
 if (-not $Zip -and -not $BootImg -and -not $RecoveryImg) { throw 'Give -Zip <ota.zip | payload.bin> or -BootImg <boot.img>, and optionally -RecoveryImg <recovery.img>' }
@@ -347,13 +436,18 @@ function Read-OsVersion([byte[]]$h) {
   }
 }
 
-function Get-BootKernelRelease([byte[]]$d) {
+# Release and compiler (clang version) from the kernel banner of a boot image.
+function Get-BootKernelInfo([byte[]]$d) {
+  $none = [pscustomobject]@{ Release = $null; Compiler = $null }
   $hv = [BitConverter]::ToUInt32($d, 40)
   if ($hv -gt 4) { $hv = 0 }
   $kSize = [BitConverter]::ToUInt32($d, 8)
   $page = if ($hv -ge 3) { 4096 } else { [BitConverter]::ToUInt32($d, 36) }
-  if ($kSize -eq 0 -or $page + $kSize -gt $d.Length) { return $null }
-  try { return [FoxUnpack3]::KernelRelease([FoxUnpack3]::Decompress($d, [int]$page, [int]$kSize)) } catch { return $null }
+  if ($kSize -eq 0 -or $page + $kSize -gt $d.Length) { return $none }
+  try {
+    $k = [FoxUnpack3]::Decompress($d, [int]$page, [int]$kSize)
+    return [pscustomobject]@{ Release = [FoxUnpack3]::KernelRelease($k); Compiler = [FoxUnpack3]::KernelCompiler($k) }
+  } catch { return $none }
 }
 
 function Read-VendorBoot([byte[]]$d) {
@@ -364,7 +458,7 @@ function Read-VendorBoot([byte[]]$d) {
   $hSize = [BitConverter]::ToUInt32($d, 2096)
   $rOff = [int]([math]::Ceiling($hSize / $page) * $page)
   $raw = [FoxUnpack3]::Decompress($d, $rOff, [int]$rSize)
-  $prop = $null; $vermagic = $null
+  $prop = $null; $vermagic = $null; $kmodCompiler = $null
   $p = 0
   while ($p -lt $raw.Length -and ($null -eq $prop -or $null -eq $vermagic)) {
     $hdr = [Text.Encoding]::ASCII.GetString($raw, $p, 110)
@@ -377,8 +471,11 @@ function Read-VendorBoot([byte[]]$d) {
     if ($name -eq 'TRAILER!!!') { break }
     if ($name -eq 'prop.default') { $prop = [Text.Encoding]::ASCII.GetString($raw, $p, $fsize) }
     elseif ($null -eq $vermagic -and $name -like 'lib/modules/*.ko') {
-      $m = [regex]::Match([Text.Encoding]::ASCII.GetString($raw, $p, $fsize), 'vermagic=([^\x00 ]+)')
+      $koText = [Text.Encoding]::ASCII.GetString($raw, $p, $fsize)
+      $m = [regex]::Match($koText, 'vermagic=([^\x00 ]+)')
       if ($m.Success) { $vermagic = $m.Groups[1].Value }
+      $c = [regex]::Match($koText, 'clang version ([0-9.]+)')
+      if ($c.Success) { $kmodCompiler = $c.Groups[1].Value }
     }
     $p = ($p + $fsize + 3) -band -bnot 3
   }
@@ -386,13 +483,20 @@ function Read-VendorBoot([byte[]]$d) {
   $rel = ([regex]::Match($prop, '(?m)^ro\.build\.version\.release=(.*)$')).Groups[1].Value.Trim()
   $spl = ([regex]::Match($prop, '(?m)^ro\.build\.version\.security_patch=(.*)$')).Groups[1].Value.Trim()
   $parts = @($rel.Split('.')) + @('0', '0')
+  $dev = $null
+  foreach ($k in 'ro.product.device', 'ro.product.system.device', 'ro.product.vendor.device') {
+    $m = [regex]::Match($prop, '(?m)^' + [regex]::Escape($k) + '=(.*)$')
+    if ($m.Success) { $dev = $m.Groups[1].Value.Trim(); break }
+  }
   [pscustomobject]@{
     Kind          = 'vendor_boot'
+    Device        = $dev
     HeaderVersion = $hv
     OsVersion     = '{0}.{1}.{2}' -f $parts[0], $parts[1], $parts[2]
     PatchLevel    = if ($spl.Length -ge 7) { $spl.Substring(0, 7) } else { $spl }
     PatchDate     = $spl
     Vermagic      = $vermagic
+    KmodCompiler  = $kmodCompiler
   }
 }
 
@@ -438,12 +542,40 @@ function Read-ImgBytes([byte[]]$d) {
   if ($magic -eq 'VNDRBOOT') { return Read-VendorBoot $d }
   $info = Read-OsVersion $d
   $info | Add-Member -NotePropertyName Kind -NotePropertyValue 'boot'
-  $info | Add-Member -NotePropertyName KernelRelease -NotePropertyValue (Get-BootKernelRelease $d)
+  $ki = Get-BootKernelInfo $d
+  $info | Add-Member -NotePropertyName KernelRelease -NotePropertyValue $ki.Release
+  $info | Add-Member -NotePropertyName KernelCompiler -NotePropertyValue $ki.Compiler
   return $info
 }
 
 function Read-ImgFile([string]$path) {
   return Read-ImgBytes ([IO.File]::ReadAllBytes($path))
+}
+
+# Bytes of a recovery image, or of the image inside an OrangeFox installer zip
+# (recovery.img, or the first .img entry with an ANDROID! or VNDRBOOT header).
+function Read-RecoveryBytes([string]$path) {
+  $full = (Resolve-Path $path).Path
+  $b = [IO.File]::ReadAllBytes($full)
+  if ($b.Length -lt 4 -or $b[0] -ne 0x50 -or $b[1] -ne 0x4B) { return ,$b }
+  $zf = [IO.Compression.ZipFile]::OpenRead($full)
+  try {
+    $entries = @($zf.Entries | Where-Object { $_.FullName -ieq 'recovery.img' }) + @($zf.Entries | Where-Object { $_.FullName -like '*.img' -and $_.FullName -ine 'recovery.img' })
+    foreach ($e in $entries) {
+      $ms = New-Object IO.MemoryStream
+      $s = $e.Open()
+      try { $s.CopyTo($ms) } finally { $s.Close() }
+      $d = $ms.ToArray()
+      if ($d.Length -ge 8) {
+        $magic = [Text.Encoding]::ASCII.GetString($d, 0, 8)
+        if ($magic -eq 'ANDROID!' -or $magic -eq 'VNDRBOOT') {
+          Write-Host "Recovery zip   : using $($e.FullName) from $(Split-Path $full -Leaf)"
+          return ,$d
+        }
+      }
+    }
+  } finally { $zf.Dispose() }
+  throw "No recovery image (ANDROID! or VNDRBOOT header) found in $full"
 }
 
 function Find-PayloadTool {
@@ -482,7 +614,9 @@ function Select-WorkDir([long]$needBytes) {
   }
   $ans = Read-Host "Temporary folder (Enter = $default)"
   if ([string]::IsNullOrWhiteSpace($ans)) { $ans = $default }
-  return $ans.Trim('"')
+  $ans = $ans.Trim('"')
+  if ($ans -match '^[A-Za-z]:?$') { $ans = $ans.Substring(0, 1) + ':\tmp' }
+  return $ans
 }
 
 function Get-PayloadFile([string]$zipPath, [string]$tmp) {
@@ -492,6 +626,22 @@ function Get-PayloadFile([string]$zipPath, [string]$tmp) {
   try { [IO.Compression.ZipFileExtensions]::ExtractToFile($zf.GetEntry('payload.bin'), $pl) }
   finally { $zf.Dispose() }
   return $pl
+}
+
+# Partition names written by an A/B package, read from the payload.bin manifest only
+# (no extraction). Returns $null when the manifest cannot be read.
+function Get-PayloadPartitions([string]$zipPath, [string]$payloadPath) {
+  try {
+    if ($zipPath) {
+      $zf = [IO.Compression.ZipFile]::OpenRead($zipPath)
+      try {
+        $s = $zf.GetEntry('payload.bin').Open()
+        try { return ,[FoxPayload1]::Partitions($s) } finally { $s.Close() }
+      } finally { $zf.Dispose() }
+    }
+    $s = [IO.File]::OpenRead($payloadPath)
+    try { return ,[FoxPayload1]::Partitions($s) } finally { $s.Close() }
+  } catch { return $null }
 }
 
 function Invoke-GoDumper([string]$tool, [string]$inputPath, [string]$zipPath, [string]$out, [string]$tmp) {
@@ -557,7 +707,7 @@ function Get-BootFromPayload([string]$inputPath, [string]$zipPath) {
 }
 
 if (-not $Zip -and -not $BootImg) {
-  $rbytes = [IO.File]::ReadAllBytes((Resolve-Path $RecoveryImg).Path)
+  $rbytes = Read-RecoveryBytes $RecoveryImg
   $rinfo = Read-ImgBytes $rbytes
   $rdev = if ($rinfo.Kind -eq 'boot') { Get-RamdiskDevice $rbytes } else { $null }
   Write-Host "Recovery header: Android $($rinfo.OsVersion), patch $($rinfo.PatchLevel)"
@@ -572,6 +722,7 @@ if (-not $Zip -and -not $BootImg) {
 $metaPatch = $null
 $metaDevice = $null
 $boot = $null
+$payloadParts = $null
 
 if ($BootImg) {
   $boot = Read-ImgFile (Resolve-Path $BootImg).Path
@@ -579,6 +730,7 @@ if ($BootImg) {
 else {
   $zipFull = (Resolve-Path $Zip).Path
   if ([IO.Path]::GetFileName($zipFull) -ieq 'payload.bin') {
+    $payloadParts = Get-PayloadPartitions $null $zipFull
     $boot = Get-BootFromPayload $zipFull $null
   }
   else {
@@ -610,6 +762,7 @@ else {
     }
     finally { $zf.Dispose() }
     if ($hasPayload) {
+      $payloadParts = Get-PayloadPartitions $zipFull $null
       if (-not $workDirGiven) { $WorkDir = Select-WorkDir ([long]($payloadSize * 1.05) + 200MB) }
       $boot = Get-BootFromPayload $zipFull $zipFull
     }
@@ -619,36 +772,47 @@ else {
 if ($metaDevice) { Write-Host "OTA device     : $metaDevice" }
 if ($metaPatch) { Write-Host "OTA metadata   : security patch $metaPatch" }
 Write-Host "Boot header    : Android $($boot.OsVersion), patch $($boot.PatchLevel) (header v$($boot.HeaderVersion))"
-if ($boot.KernelRelease) { Write-Host "Boot kernel    : $($boot.KernelRelease)" }
+if ($boot.KernelRelease) { Write-Host "Boot kernel    : $($boot.KernelRelease)$(if ($boot.KernelCompiler) { ", clang $($boot.KernelCompiler)" })" }
+if ($payloadParts) {
+  $bootParts = @($payloadParts | Where-Object { $_ -in 'boot', 'init_boot', 'vendor_boot', 'dtbo', 'recovery' })
+  Write-Host ("OTA writes     : {0} partitions, including {1}" -f $payloadParts.Count, ($bootParts -join ', '))
+}
 
 if ($RecoveryImg) {
-  $rec = Read-ImgFile (Resolve-Path $RecoveryImg).Path
+  $recBytes = Read-RecoveryBytes $RecoveryImg
+  $rec = Read-ImgBytes $recBytes
   $kernelProblem = $null
   if ($rec.Kind -eq 'vendor_boot') {
     Write-Host "Recovery props : Android $($rec.OsVersion), patch $($rec.PatchDate) (vendor_boot v$($rec.HeaderVersion))"
-    Write-Host "Recovery kmods : $(if ($rec.Vermagic) { $rec.Vermagic } else { '(no modules found)' })"
+    Write-Host "Recovery kmods : $(if ($rec.Vermagic) { $rec.Vermagic } else { '(no modules found)' })$(if ($rec.KmodCompiler) { ", clang $($rec.KmodCompiler)" })"
     if (-not $boot.KernelRelease) {
       $kernelProblem = 'the ROM kernel release could not be read from boot.img; compare the module version by hand'
     }
     elseif ($rec.Vermagic -and $rec.Vermagic -ne $boot.KernelRelease) {
       $kernelProblem = "the kernel modules in this vendor_boot were built for $($rec.Vermagic), the ROM kernel is $($boot.KernelRelease). vendor_boot is also used for the normal Android boot, so flashing it can stop Android from booting"
     }
+    # Same release string, different compiler: the kernel was rebuilt (bramble: LineageOS 23.2
+    # with clang 21.0.0, 24.0 with clang 22.0.2, both 4.19.325-cip136-st20-g2af5306961ae, all
+    # 221 modules differ).
+    $kernelRebuilt = (-not $kernelProblem) -and $rec.KmodCompiler -and $boot.KernelCompiler -and ($rec.KmodCompiler -ne $boot.KernelCompiler)
   }
   else {
     Write-Host "Recovery header: Android $($rec.OsVersion), patch $($rec.PatchLevel)"
   }
   $recDevice = $null
   if ($rec.Kind -eq 'boot') {
-    $recDevice = Get-RamdiskDevice ([IO.File]::ReadAllBytes((Resolve-Path $RecoveryImg).Path))
-    if ($recDevice) { Write-Host "Recovery device: $recDevice" }
+    $recDevice = Get-RamdiskDevice $recBytes
   }
+  elseif ($rec.Device) { $recDevice = $rec.Device }
+  if ($recDevice) { Write-Host "Recovery device: $recDevice" }
   $skipPatchCheck = $recDevice -and $NoDecrypt.ContainsKey($recDevice)
   $recName = Split-Path $RecoveryImg -Leaf
-  $deviceMismatch = $metaDevice -and ($recName -notmatch [regex]::Escape($metaDevice))
+  $deviceMismatch = $metaDevice -and $(if ($recDevice) { $recDevice -ne $metaDevice } else { $recName -notmatch [regex]::Escape($metaDevice) })
   $patchMatch = ($rec.OsVersion -eq $boot.OsVersion -and $rec.PatchLevel -eq $boot.PatchLevel)
   $target = if ($metaPatch) { $metaPatch } else { "$($boot.PatchLevel)-01 (check the exact day)" }
   if ($deviceMismatch) {
-    Write-Host "WARNING: the recovery file name does not mention '$metaDevice'." -ForegroundColor Red
+    if ($recDevice) { Write-Host "WARNING: the recovery is built for '$recDevice', the OTA for '$metaDevice'." -ForegroundColor Red }
+    else { Write-Host "WARNING: the recovery file name does not mention '$metaDevice'." -ForegroundColor Red }
     if ($patchMatch) {
       Write-Host "RESULT: patch levels match, but the files appear to belong to different devices. Do not flash this recovery for $metaDevice." -ForegroundColor Red
     }
@@ -658,6 +822,63 @@ if ($RecoveryImg) {
   }
   elseif ($skipPatchCheck) {
     Write-Host "RESULT: this $recDevice recovery does not decrypt /data, so the ROM's security patch and kernel do not have to match. $($NoDecrypt[$recDevice]). On a ROM that encrypts /data, the data partition stays unreadable in this recovery." -ForegroundColor Green
+  }
+  elseif ($rec.Kind -eq 'vendor_boot') {
+    # vendor_boot recovery: the boot verdict comes from the kernel modules. The patch level in
+    # prop.default decides decryption: the QTI keymaster binds the metadata key to the patch
+    # level of the system that last used it. Tested on bramble (LineageOS 23.2-20261010, key
+    # upgraded to 2026-10 by Android; recovery 2026-09-01): begin returned -62
+    # (KEY_REQUIRES_UPGRADE), upgradeKey -38, /data stayed encrypted, the key was not changed.
+    if (-not $boot.KernelRelease) {
+      Write-Host "RESULT: $kernelProblem." -ForegroundColor Yellow
+    }
+    elseif ($kernelProblem) {
+      Write-Host "RESULT: do not flash: $kernelProblem." -ForegroundColor Red
+    }
+    elseif ($kernelRebuilt) {
+      Write-Host "RESULT: do not flash: the version strings match, but the ROM kernel was built with clang $($boot.KernelCompiler) and the modules in this vendor_boot with clang $($rec.KmodCompiler). The kernel was rebuilt; these modules have not been tested with it. Use an image built from this ROM's vendor_boot." -ForegroundColor Red
+    }
+    else {
+      Write-Host 'RESULT: match, the kernel modules fit this ROM kernel' -ForegroundColor Green
+    }
+    if (-not $patchMatch) {
+      $recMonth = if ($rec.PatchDate.Length -ge 7) { $rec.PatchDate.Substring(0, 7) } else { $rec.PatchDate }
+      $recOs = [int]($rec.OsVersion.Split('.')[0]); $romOs = [int]($boot.OsVersion.Split('.')[0])
+      if ($recOs -lt $romOs -and [string]::CompareOrdinal($recMonth, $boot.PatchLevel) -le 0) {
+        Write-Host "DECRYPT: no. The recovery reports Android $recOs, the ROM Android $romOs. Keymaster binds the metadata key to the Android version as well as the patch level; once the ROM has started, a recovery with a lower value is expected to fail as it does with a lower patch (error -38, measured), and /data stays encrypted. Build the recovery with PLATFORM_VERSION := $romOs." -ForegroundColor Yellow
+      }
+      elseif ($recOs -gt $romOs) {
+        Write-Host "DECRYPT: do not decrypt with this image. The recovery reports Android $recOs, higher than the ROM's Android $romOs; keymaster can upgrade the metadata key, and the ROM can then no longer unlock /data." -ForegroundColor Red
+      }
+      elseif ([string]::CompareOrdinal($recMonth, $boot.PatchLevel) -lt 0) {
+        Write-Host "DECRYPT: no. The recovery reports patch $($rec.PatchDate), the ROM $($boot.PatchLevel). Once the ROM has started, keymaster refuses the metadata key in this recovery (error -38) and /data stays encrypted; the key is not changed. Android still starts if RESULT is a match. Decryption needs a recovery built with PLATFORM_SECURITY_PATCH := $target." -ForegroundColor Yellow
+      }
+      elseif ([string]::CompareOrdinal($recMonth, $boot.PatchLevel) -gt 0) {
+        Write-Host "DECRYPT: do not decrypt with this image. The recovery reports patch $($rec.PatchDate), higher than the ROM's $($boot.PatchLevel); keymaster can upgrade the metadata key to that level, and the ROM can then no longer unlock /data." -ForegroundColor Red
+      }
+      else {
+        Write-Host "NOTE: the recovery reports Android $($rec.OsVersion), the ROM boot header Android $($boot.OsVersion); the patch level matches." -ForegroundColor Yellow
+      }
+    }
+    # What a ROM install leaves in vendor_boot. An A/B package (LineageOS Updater, or
+    # installing the zip in OrangeFox) writes the inactive slot. For FOX_VENDOR_BOOT_RECOVERY
+    # with BOARD_BOOT_HEADER_VERSION 3, fox_12.1 orangefox.mk sets
+    # OF_NO_REFLASH_CURRENT_ORANGEFOX, so tw_auto_reflashtwrp defaults to 0 and is hidden, and
+    # orangefox.cpp does not call Flash_Current_Twrp() after the ROM install.
+    if ($payloadParts -and ($payloadParts -contains 'vendor_boot')) {
+      Write-Host 'ROM INSTALL: Android starts. The package writes its own vendor_boot to the inactive slot, whether the LineageOS Updater or OrangeFox installs it, and OrangeFox does not write itself back there. OrangeFox is gone from that slot until it is installed again; RESULT above says whether this image may be.' -ForegroundColor Green
+    }
+    elseif ($payloadParts) {
+      if ($kernelProblem -or $kernelRebuilt) {
+        Write-Host 'ROM INSTALL: the package does not write vendor_boot, so the new slot keeps the vendor_boot it has. If that slot holds this image, its modules do not fit and Android may not start (see RESULT). Flash a vendor_boot that matches the ROM kernel to that slot first.' -ForegroundColor Red
+      }
+      else {
+        Write-Host 'ROM INSTALL: the package does not write vendor_boot, so the new slot keeps the vendor_boot it has. With this image there, the modules fit and Android starts; check any other image in that slot with this script.' -ForegroundColor Yellow
+      }
+    }
+    elseif (-not $Zip) {
+      Write-Host 'ROM INSTALL: not checked. Give the ROM package with -Zip to see whether it writes vendor_boot.'
+    }
   }
   elseif ($kernelProblem -and $boot.KernelRelease) {
     Write-Host "RESULT: do not flash: $kernelProblem." -ForegroundColor Red
