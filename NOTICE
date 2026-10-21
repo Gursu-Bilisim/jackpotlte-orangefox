@@ -29,10 +29,12 @@ Parts from others keep their own authors and licenses:
 * prebuilt/Image, prebuilt/dtb
   Linux kernel 4.4.302 for the Exynos 7885 and its device tree, built by
   AlexFurina ("Linux version 4.4.302 (Furina@Love) ... Sat Oct 18 00:00:00
-  KST 2025"), taken unmodified from the fork. GPL-2.0. The kernel is based on
-  Samsung's SM-A530F kernel source, published at
-  https://opensource.samsung.com. The exact source has been requested from
-  the author: https://github.com/AlexFurina/android_device_samsung_jackpotlte/issues/1
+  KST 2025"), taken unmodified from the fork. GPL-2.0. Source named by
+  AlexFurina in
+  https://github.com/AlexFurina/android_device_samsung_jackpotlte/issues/1:
+  https://github.com/kevios12/android_kernel_samsung_universal7885
+  (kevios12's Nameless kernel for the Exynos 7885, with
+  arch/arm64/configs/exynos7885-jackpotlte_defconfig).
 
 * mkboot/mkbootimg
   Prebuilt x86-64 mkbootimg with Samsung --dt support, taken unmodified from
