@@ -23,6 +23,13 @@
 #   - A bare payload.bin
 #   - A boot.img you extracted yourself (e.g. with Multi Image Kitchen) via -BootImg
 #
+# fstab (boot and recovery images with header v0-v2): the /data line is read from the ROM
+# boot ramdisk (first stage fstab) and from the recovery ramdisk (recovery.fstab). The
+# ROM fstab line and the Recovery fstab line show the fscrypt policy and whether metadata
+# encryption is used. A different policy means the recovery cannot decrypt /data. Without
+# metadata encryption, placeholder patch values in the recovery (2099-12, as in many
+# TWRP/OrangeFox trees, e.g. beryllium) are reported as intentional instead of as a rebuild.
+
 # Recovery images that do not decrypt /data (listed in $NoDecrypt below, e.g. jackpotlte) do
 # not depend on the ROM's patch level or kernel. For them -RecoveryImg alone is enough.
 #
@@ -537,7 +544,82 @@ function Get-RamdiskDevice([byte[]]$d) {
   return $null
 }
 
+# Text of the first regular file in a boot or recovery ramdisk (header v0-v2) whose path
+# matches $pattern. Returns $null when the ramdisk cannot be read or has no such file.
+function Get-RamdiskText([byte[]]$d, [string]$pattern) {
+  try {
+    $hv = [BitConverter]::ToUInt32($d, 40)
+    if ($hv -gt 4) { $hv = 0 }
+    if ($hv -ge 3) { return $null }
+    $kSize = [BitConverter]::ToUInt32($d, 8)
+    $rSize = [BitConverter]::ToUInt32($d, 16)
+    $page = [BitConverter]::ToUInt32($d, 36)
+    $rOff = [int]($page + [math]::Ceiling($kSize / $page) * $page)
+    if ($rSize -eq 0 -or $rOff + $rSize -gt $d.Length) { return $null }
+    $raw = [FoxUnpack3]::Decompress($d, $rOff, [int]$rSize)
+    $p = 0
+    while ($p + 110 -le $raw.Length) {
+      $hdr = [Text.Encoding]::ASCII.GetString($raw, $p, 110)
+      if (-not $hdr.StartsWith('07070')) { break }
+      $mode  = [Convert]::ToInt32($hdr.Substring(14, 8), 16)
+      $fsize = [Convert]::ToInt32($hdr.Substring(54, 8), 16)
+      $nsize = [Convert]::ToInt32($hdr.Substring(94, 8), 16)
+      $p += 110
+      $name = [Text.Encoding]::ASCII.GetString($raw, $p, $nsize - 1).TrimStart('/')
+      $p = ($p + $nsize + 3) -band -bnot 3
+      if ($name -eq 'TRAILER!!!') { break }
+      if (($mode -band 0xF000) -eq 0x8000 -and $name -match $pattern) {
+        return [pscustomobject]@{ Name = $name; Text = [Text.Encoding]::ASCII.GetString($raw, $p, $fsize) }
+      }
+      $p = ($p + $fsize + 3) -band -bnot 3
+    }
+  } catch { }
+  return $null
+}
+
+# Devices where a recovery with placeholder patch values (2099-12) was measured against a
+# ROM without metadata encryption: decrypted /data in the recovery, then Android booted and
+# unlocked /data again.
+$PlaceholderMeasured = @{
+  'beryllium' = 'measured 2026-10-30: OrangeFox fox_12.0_5 Enjoy (ThRE-Team/sdm845_fox) on BaikalOS 17 DEV-20261029-05'
+}
+
+# fstab in a ROM boot ramdisk (first stage mount) and in a TWRP/OrangeFox recovery ramdisk.
+$RomFstabPattern = '^(first_stage_ramdisk/|system/etc/|etc/|vendor/etc/)?fstab\.[^/]+$'
+$RecFstabPattern = '^(system/etc/|etc/)?recovery\.fstab$'
+
+# /data encryption settings from an fstab: file systems, fileencryption values, fscrypt
+# policy version, and whether metadata encryption (the key keymaster binds to the patch
+# level on tucana and bramble) is used.
+function Get-FstabCrypto($found) {
+  if (-not $found -or -not $found.Text) { return $null }
+  $fs = @(); $fe = @(); $metaEnc = $false
+  foreach ($line in ($found.Text -split "`r?`n")) {
+    $t = $line.Trim()
+    if (-not $t -or $t.StartsWith('#')) { continue }
+    $c = @($t -split '\s+')
+    if ($c.Count -lt 5 -or $c[1] -ne '/data') { continue }
+    $fs += $c[2]
+    foreach ($o in $c[4].Split(',')) {
+      if ($o -like 'fileencryption=*') { $fe += $o.Substring(15) }
+      elseif ($o -like 'metadata_encryption*' -or $o -like 'keydirectory=*') { $metaEnc = $true }
+    }
+  }
+  if ($fs.Count -eq 0) { return $null }
+  $fe = @($fe | Select-Object -Unique)
+  $v2 = @($fe | Where-Object { $_ -match ':v2' }).Count
+  $policy = if ($fe.Count -eq 0) { 'none' } elseif ($v2 -eq $fe.Count) { 'v2' } elseif ($v2 -eq 0) { 'v1' } else { 'mixed' }
+  $feText = if ($fe.Count) { 'fileencryption=' + ($fe -join ' | ') } else { 'no fileencryption' }
+  [pscustomobject]@{
+    File               = $found.Name
+    Policy             = $policy
+    MetadataEncryption = $metaEnc
+    Summary            = '/data {0}, {1} (fscrypt {2}), metadata encryption: {3} [{4}]' -f (($fs | Select-Object -Unique) -join '+'), $feText, $policy, $(if ($metaEnc) { 'yes' } else { 'no' }), $found.Name
+  }
+}
+
 function Read-ImgBytes([byte[]]$d) {
+  $script:LastImgBytes = $d
   $magic = [Text.Encoding]::ASCII.GetString($d, 0, 8)
   if ($magic -eq 'VNDRBOOT') { return Read-VendorBoot $d }
   $info = Read-OsVersion $d
@@ -773,6 +855,9 @@ if ($metaDevice) { Write-Host "OTA device     : $metaDevice" }
 if ($metaPatch) { Write-Host "OTA metadata   : security patch $metaPatch" }
 Write-Host "Boot header    : Android $($boot.OsVersion), patch $($boot.PatchLevel) (header v$($boot.HeaderVersion))"
 if ($boot.KernelRelease) { Write-Host "Boot kernel    : $($boot.KernelRelease)$(if ($boot.KernelCompiler) { ", clang $($boot.KernelCompiler)" })" }
+$romFs = $null
+if ($boot.Kind -eq 'boot' -and $script:LastImgBytes) { $romFs = Get-FstabCrypto (Get-RamdiskText $script:LastImgBytes $RomFstabPattern) }
+if ($romFs) { Write-Host "ROM fstab      : $($romFs.Summary)" }
 if ($payloadParts) {
   $bootParts = @($payloadParts | Where-Object { $_ -in 'boot', 'init_boot', 'vendor_boot', 'dtbo', 'recovery' })
   Write-Host ("OTA writes     : {0} partitions, including {1}" -f $payloadParts.Count, ($bootParts -join ', '))
@@ -798,6 +883,8 @@ if ($RecoveryImg) {
   }
   else {
     Write-Host "Recovery header: Android $($rec.OsVersion), patch $($rec.PatchLevel)"
+    $recFs = Get-FstabCrypto (Get-RamdiskText $recBytes $RecFstabPattern)
+    if ($recFs) { Write-Host "Recovery fstab : $($recFs.Summary)" }
   }
   $recDevice = $null
   if ($rec.Kind -eq 'boot') {
@@ -880,6 +967,9 @@ if ($RecoveryImg) {
       Write-Host 'ROM INSTALL: not checked. Give the ROM package with -Zip to see whether it writes vendor_boot.'
     }
   }
+  elseif ($romFs -and $recFs -and $romFs.Policy -ne $recFs.Policy) {
+    Write-Host "RESULT: this recovery cannot decrypt /data on this ROM: the ROM uses fscrypt $($romFs.Policy), the recovery fstab $($recFs.Policy). Use a recovery whose fstab matches the ROM's /data line." -ForegroundColor Red
+  }
   elseif ($kernelProblem -and $boot.KernelRelease) {
     Write-Host "RESULT: do not flash: $kernelProblem." -ForegroundColor Red
     if (-not $patchMatch) { Write-Host "The patch level also differs; a rebuild needs PLATFORM_SECURITY_PATCH := $target" -ForegroundColor Red }
@@ -889,6 +979,17 @@ if ($RecoveryImg) {
       Write-Host "RESULT: patch levels match, but $kernelProblem." -ForegroundColor Yellow
     } else {
       Write-Host 'RESULT: match, no rebuild needed' -ForegroundColor Green
+    }
+  }
+  elseif ($romFs -and -not $romFs.MetadataEncryption -and [int]$rec.PatchLevel.Substring(0, 4) -ge 2099) {
+    # Placeholder values (PLATFORM_VERSION 99.87.36, PLATFORM_SECURITY_PATCH 2099-12-31) are
+    # set on purpose in many TWRP/OrangeFox trees (beryllium: ThRE-Team/sdm845_fox). The
+    # rebuild rule above was measured on devices whose ROM uses metadata encryption
+    # (tucana, bramble: -38 lower, -62 higher). This ROM's fstab has none.
+    if ($recDevice -and $PlaceholderMeasured.ContainsKey($recDevice)) {
+      Write-Host "RESULT: match: the recovery reports placeholder values (Android $($rec.OsVersion), patch $($rec.PatchLevel)) on purpose and the ROM has no metadata encryption. Decrypting in this recovery and booting Android afterwards was $($PlaceholderMeasured[$recDevice])." -ForegroundColor Green
+    } else {
+    Write-Host "RESULT: patch differs on purpose: the recovery reports placeholder values (Android $($rec.OsVersion), patch $($rec.PatchLevel)) and the ROM has no metadata encryption, so the rebuild rule measured on tucana and bramble does not apply as is. Not measured on this ROM yet: decrypt once in the recovery, then boot Android and check that it still unlocks /data." -ForegroundColor Yellow
     }
   }
   else {
