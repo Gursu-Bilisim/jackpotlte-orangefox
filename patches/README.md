@@ -9,10 +9,11 @@ Applies to OrangeFox `bootable/recovery`, commit `cbcc4f713dbef98d76d6d2cfd019b1
 TWRP and OrangeFox are licensed under the GNU General Public License, version 3 or later, and so
 are these changes (see `COPYING`).
 
-The same source tree builds [Gursu-Bilisim/tucana-orangefox](https://github.com/Gursu-Bilisim/tucana-orangefox)
-and [Gursu-Bilisim/bramble-orangefox](https://github.com/Gursu-Bilisim/bramble-orangefox), so the
-patch is the same file in all three repositories. The image in each release is built with this
-patch applied.
+The same source tree builds [Gursu-Bilisim/tucana-orangefox](https://github.com/Gursu-Bilisim/tucana-orangefox),
+[Gursu-Bilisim/bramble-orangefox](https://github.com/Gursu-Bilisim/bramble-orangefox) and
+[Gursu-Bilisim/gts7xlwifi-orangefox](https://github.com/Gursu-Bilisim/gts7xlwifi-orangefox), so the
+patch contains the changes made for those devices as well. The image in each release is built
+with the patch of its tag applied.
 
 Made for jackpotlte:
 
@@ -25,15 +26,16 @@ Made for jackpotlte:
   These three places now swap red and blue when the function returns 1. Builds with another
   pixel format are unchanged.
 
-Made for tucana and bramble (no effect on jackpotlte unless stated):
+Made for tucana, bramble and gts7xlwifi (no effect on jackpotlte unless stated):
 
 - `partitionmanager.cpp`: when the ROM's fstab is copied to `/etc/additional.fstab`,
   `/dev/block/bootdevice/by-name/` paths are rewritten to `/dev/block/by-name/`. jackpotlte
   uses `/dev/block/platform/13500000.dwmmc0/by-name/` paths, which this does not touch.
 - `partitionmanager.cpp`: when `/data` uses file-based encryption, the Qualcomm `persist` and
   `modem` partitions are mounted read-only before decryption (the modem name gets the slot
-  suffix on A/B devices). This build has no decryption and jackpotlte has no such partitions,
-  so the code does not run.
+  suffix on A/B devices). `persist` is only mounted when `/proc/mounts` has nothing at
+  `/mnt/vendor/persist` yet (gts7xlwifi mounts it from its own init script). This build has no
+  decryption and jackpotlte has no such partitions, so the code does not run.
 - `gui/patternpassword.cpp`, `gui/objects.hpp`: `GUIPatternPassword::IsInRegion`. The pattern
   page also claims touches that hit a dot outside the pattern's placement box, so a gesture that
   starts on a corner dot is no longer ignored.
@@ -47,6 +49,18 @@ Made for tucana and bramble (no effect on jackpotlte unless stated):
   centred on the icon now does the same. jackpotlte does not show the decrypt page.
 - Theme (`gui/theme/portrait_hdpi/themes/navbar.xml`): gesture navigation is off by default and
   the screen height no longer adds 96 px for a hidden navigation bar.
+
+- `minuitwrp/graphics.cpp`: `gr_blit()` clamps the drawn area to the size of the source surface
+  (made for gts7xlwifi, where `TW_ROTATION := 270` made the console overlay read past the end of
+  an image buffer and crash). This code runs on jackpotlte too; without rotation only pixels read
+  from outside the image are dropped.
+- `minuitwrp/graphics.cpp`, `minuitwrp/truetype.cpp`: the rotated copies of images and text are
+  allocated with two spare, zeroed rows (made for gts7xlwifi). Only used with `TW_ROTATION`;
+  jackpotlte does not set it.
+
+The other repositories also carry `system_vold.diff` (TeamWin `android_system_vold`). vold is only
+built into the recovery with `TW_INCLUDE_CRYPTO`, which jackpotlte sets to `false`, so that patch
+does not apply to these images.
 
 ## Applying
 

@@ -29,6 +29,8 @@
 # encryption is used. A different policy means the recovery cannot decrypt /data. Without
 # metadata encryption, placeholder patch values in the recovery (2099-12, as in many
 # TWRP/OrangeFox trees, e.g. beryllium) are reported as intentional instead of as a rebuild.
+# With metadata encryption, placeholder values are reported as a match only for devices
+# where that was measured ($PlaceholderMetadataMeasured, e.g. gts7xlwifi on LineageOS 24).
 
 # Recovery images that do not decrypt /data (listed in $NoDecrypt below, e.g. jackpotlte) do
 # not depend on the ROM's patch level or kernel. For them -RecoveryImg alone is enough.
@@ -584,6 +586,14 @@ $PlaceholderMeasured = @{
   'beryllium' = 'measured 2026-10-30: OrangeFox fox_12.0_5 Enjoy (ThRE-Team/sdm845_fox) on BaikalOS 17 DEV-20261029-05'
 }
 
+# Devices where a recovery with placeholder values was measured against a ROM WITH metadata
+# encryption: /data decrypted in the recovery (metadata and the lock screen credential), then
+# Android booted and unlocked /data again, repeatedly. On these devices the rebuild rule
+# measured on tucana and bramble does not apply.
+$PlaceholderMetadataMeasured = @{
+  'gts7xlwifi' = 'measured 2026-11-02 to 2026-11-09 on LineageOS 24.0-20261029-nightly (Samsung QSEE keymaster and MDFPP gatekeeper), recovery reporting Android 99.87.36, patch 2127-12-31; Android unlocked /data after every decrypting session'
+}
+
 # fstab in a ROM boot ramdisk (first stage mount) and in a TWRP/OrangeFox recovery ramdisk.
 $RomFstabPattern = '^(first_stage_ramdisk/|system/etc/|etc/|vendor/etc/)?fstab\.[^/]+$'
 $RecFstabPattern = '^(system/etc/|etc/)?recovery\.fstab$'
@@ -980,6 +990,9 @@ if ($RecoveryImg) {
     } else {
       Write-Host 'RESULT: match, no rebuild needed' -ForegroundColor Green
     }
+  }
+  elseif ($recDevice -and $PlaceholderMetadataMeasured.ContainsKey($recDevice) -and [int]$rec.PatchLevel.Substring(0, 4) -ge 2099) {
+    Write-Host "RESULT: match: the recovery reports placeholder values (Android $($rec.OsVersion), patch $($rec.PatchLevel)) on purpose. Decrypting in this recovery and booting Android afterwards was $($PlaceholderMetadataMeasured[$recDevice]). Other ROM builds have not been measured." -ForegroundColor Green
   }
   elseif ($romFs -and -not $romFs.MetadataEncryption -and [int]$rec.PatchLevel.Substring(0, 4) -ge 2099) {
     # Placeholder values (PLATFORM_VERSION 99.87.36, PLATFORM_SECURITY_PATCH 2099-12-31) are

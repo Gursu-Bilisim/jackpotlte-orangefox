@@ -9,14 +9,15 @@
 #   powershell -ExecutionPolicy Bypass -File recovery-inspect.ps1 -Img <image>
 #   <image>: recovery.img, vendor_boot.img, Odin .tar or OrangeFox .zip
 #
-# Device profiles: bramble (vendor_boot), tucana (recovery), jackpotlte (RECOVERY).
+# Device profiles: bramble (vendor_boot), tucana (recovery), jackpotlte (RECOVERY),
+# gts7xlwifi (RECOVERY).
 # Each check prints OK or MISSING; INFO lines describe the build.
 
 param(
   [Parameter(Mandatory = $true)][string]$Img
 )
 
-$ScriptVersion = '2026.10.19'
+$ScriptVersion = '2026.11.09'
 Add-Type -AssemblyName System.IO.Compression
 Add-Type -AssemblyName System.IO.Compression.FileSystem
 
@@ -504,6 +505,36 @@ $Profiles = @{
     }
   }
 
+  'gts7xlwifi' = @{
+    Name = 'Samsung Galaxy Tab S7+ Wi-Fi (SM-T970, gts7xlwifi)'; Partition = 'RECOVERY'; PartitionSize = 86888448
+    Critical = @('Decryption')
+    Summary = 'all decryption components present. Check the ROM build with patch-check.ps1 before flashing.'
+    Checks = {
+      Add-Result 'Boot' 'boot image header v2' ($h.Type -eq 'boot' -and $h.Version -eq 2) "v$($h.Version)"
+      Add-Result 'Boot' 'kernel' ($h.KernelSize -gt 0 -and [bool]$kernel) $kernel
+      Add-Result 'Boot' 'DTB present' ($h.DtbSize -gt 0) "$($h.DtbSize) bytes"
+      Add-Result 'Boot' 'cmdline androidboot.hardware=qcom' ($h.Cmdline -match 'androidboot\.hardware=qcom') ''
+
+      $flags = Get-Text $rd 'system/etc/twrp.flags'
+      Add-Result 'Recovery' 'twrp.flags: EFS and Persist as images' ([bool]$flags -and $flags -match '(?m)^/efs_image\s+emmc\s' -and $flags -match '(?m)^/persist_image\s+emmc\s') '/efs_image, /persist_image (nested /mnt/vendor/* entries cannot be backed up)'
+      Add-Result 'Recovery' 'twrp.flags: USB-OTG at /usb_otg' ([bool]$flags -and $flags -match '(?m)^/usb_otg\s') 'shown in the Files menu'
+
+      $qrc = Get-Text $rd 'init.recovery.qcom.rc'
+      Add-Result 'Decryption' 'qcom decrypt init (twrp-common)' ($rd.Files.ContainsKey('init.recovery.qcom_decrypt.rc')) 'init.recovery.qcom_decrypt.rc'
+      Add-Result 'Decryption' 'persist and efs kept until all users are decrypted' ([bool]$qrc -and $qrc -match 'on property:twrp\.all\.users\.decrypted=true') 'init.recovery.qcom.rc'
+      $uev = Get-Text $rd 'vendor/etc/ueventd.rc'
+      Add-Result 'Decryption' 'SPU and sec_nvm device permissions' ([bool]$uev -and $uev -match '(?m)^/dev/qsee_ipc_irq_spss\s' -and $uev -match '(?m)^/dev/sec_nvm_\*\s') 'vendor/etc/ueventd.rc'
+      $n = Find-File $rd @('system/bin/qseecomd', 'vendor/bin/qseecomd'); Add-Result 'Decryption' 'qseecomd' ([bool]$n) $n
+      $n = Find-File $rd @('system/bin/android.hardware.keymaster@4.0-service', 'system/bin/android.hardware.keymaster@4.0-service-qti'); Add-Result 'Decryption' 'keymaster 4.0 service' ([bool]$n) $n
+      $missing = Get-Missing $rd 'system/bin' @('android.hardware.gatekeeper@1.0-service', 'spdaemon', 'sec_nvm')
+      Add-Result 'Decryption' 'gatekeeper, spdaemon, sec_nvm' ($missing.Count -eq 0) $(if ($missing) { 'missing: ' + ($missing -join ', ') } else { 'system/bin' })
+      Add-Result 'Decryption' 'MDFPP gatekeeper module' ($rd.Files.ContainsKey('vendor/lib64/hw/gatekeeper.mdfpp.so')) 'vendor/lib64/hw/gatekeeper.mdfpp.so'
+      Add-Result 'Decryption' 'vold prefers the mdfpp gatekeeper' (Test-Bytes $rd 'system/bin/recovery' 'mdfpp') 'patches/system_vold.diff'
+      Add-Result 'Decryption' 'manifest declares keymaster' ([bool]$man -and $man -match 'android\.hardware\.keymaster') 'vendor/etc/vintf/manifest.xml'
+      Add-Result 'Decryption' 'manifest declares gatekeeper' ([bool]$man -and $man -match 'android\.hardware\.gatekeeper') ''
+    }
+  }
+
   'jackpotlte' = @{
     Name = 'Samsung Galaxy A8 2018 (SM-A530F, jackpotlte), Treble partition layout'; Partition = 'RECOVERY'; PartitionSize = 39845888
     Critical = @()
@@ -608,7 +639,7 @@ if ($pixFmt -eq 'ABGR_8888') {
 # USB
 $usb = Get-Text $rd 'init.recovery.usb.rc'
 Add-Result 'USB' 'configfs USB gadget' ([bool]$usb -and $usb -match '/config/usb_gadget') ''
-Add-Result 'USB' 'MTP function' ([bool]$usb -and $usb -match 'functions/mtp\.gs0') ''
+Add-Result 'USB' 'MTP function' ([bool]$usb -and $usb -match 'functions/(mtp\.gs0|ffs\.mtp)') $(if ($usb -match 'functions/ffs\.mtp') { 'FunctionFS (ffs.mtp)' } else { 'mtp.gs0' })
 
 if ($profile) { & $profile.Checks }
 

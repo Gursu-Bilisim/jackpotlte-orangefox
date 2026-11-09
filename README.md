@@ -114,7 +114,8 @@ flash on this device is a single file, `/sys/class/camera/flash/rear_flash` (1 o
 ### recovery-inspect.ps1
 
 Lists what an OrangeFox image contains, without flashing it. The same script is shared by the
-`Gursu-Bilisim` OrangeFox repositories (bramble, tucana, jackpotlte): it reads the device from the
+`Gursu-Bilisim` OrangeFox repositories (bramble, tucana, jackpotlte,
+gts7xlwifi): it reads the device from the
 image's `prop.default` and runs that device's checks; images of other devices get the common
 checks (image layout, recovery files, display colors and `libminuitwrp.so`, USB). For jackpotlte it
 also checks the Samsung image layout (kernel, DT, `SEANDROIDENFORCE`, partition size), the device

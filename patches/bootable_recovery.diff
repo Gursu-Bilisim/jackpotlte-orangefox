@@ -158,6 +158,37 @@ index bd964771..1d101faf 100644
  	</variables>
  </recovery>
 \ No newline at end of file
+diff --git a/minuitwrp/graphics.cpp b/minuitwrp/graphics.cpp
+index 1bcc19f9..69379f7d 100644
+--- a/minuitwrp/graphics.cpp
++++ b/minuitwrp/graphics.cpp
+@@ -278,6 +278,15 @@ void gr_blit(gr_surface source, int sx, int sy, int w, int h, int dx, int dy)
+     GGLContext *gl = gr_context;
+     GGLSurface *surface = (GGLSurface*)source;
+ 
++    // Never read outside the source surface: pixelflinger does not clamp,
++    // and with TW_ROTATION the surface is first copied into an exact-size
++    // buffer, so a blit larger than the image read past its end and crashed.
++    if (sx < 0) sx = 0;
++    if (sy < 0) sy = 0;
++    if (w > (int)surface->width - sx) w = (int)surface->width - sx;
++    if (h > (int)surface->height - sy) h = (int)surface->height - sy;
++    if (w <= 0 || h <= 0) return;
++
+     if(surface->format == GGL_PIXEL_FORMAT_RGBX_8888)
+         gl->disable(gl, GGL_BLEND);
+ 
+@@ -306,7 +315,9 @@ void gr_blit(gr_surface source, int sx, int sy, int w, int h, int dx, int dy)
+         surface_rotated.height  = (gr_rotation == 180) ? surface->height : surface->width;
+         surface_rotated.stride  = surface_rotated.width;
+         surface_rotated.format  = surface->format;
+-        surface_rotated.data    = (GGLubyte*) malloc(surface_rotated.stride * surface_rotated.height * 4);
++        // Two spare zeroed rows: pixelflinger reads past the last texel of a
++        // rotated surface, which faults when the buffer ends at a guard page.
++        surface_rotated.data    = (GGLubyte*) calloc((surface_rotated.height + 2) * surface_rotated.stride, 4);
+         surface_ROTATION_transform((gr_surface) &surface_rotated, (const gr_surface) surface, 4);
+ 
+         gl->bindTexture(gl, &surface_rotated);
 diff --git a/minuitwrp/include/minuitwrp/minui.h b/minuitwrp/include/minuitwrp/minui.h
 index 5dbbf726..c46bb204 100644
 --- a/minuitwrp/include/minuitwrp/minui.h
@@ -190,6 +221,21 @@ index 2db6536d..52025913 100644
 +    return 0;
 +#endif
 +}
+diff --git a/minuitwrp/truetype.cpp b/minuitwrp/truetype.cpp
+index d224fbb1..f06e91bd 100644
+--- a/minuitwrp/truetype.cpp
++++ b/minuitwrp/truetype.cpp
+@@ -581,7 +581,9 @@ int twrpTruetype::gr_ttf_textExWH(void *context, int x, int y,
+ 		string_surface_rotated.stride  = string_surface_rotated.width;
+ 		string_surface_rotated.format  = e->surface.format;
+ 		// e->surface.format is GGL_PIXEL_FORMAT_A_8 (grayscale)
+-		string_surface_rotated.data    = (GGLubyte*) malloc(string_surface_rotated.stride * string_surface_rotated.height * 1);
++		// Two spare zeroed rows: pixelflinger reads past the last texel of a
++		// rotated surface, which faults when the buffer ends at a guard page.
++		string_surface_rotated.data    = (GGLubyte*) calloc((string_surface_rotated.height + 2) * string_surface_rotated.stride, 1);
+ 		surface_ROTATION_transform((gr_surface) &string_surface_rotated, (const gr_surface) &e->surface, 1);
+ 	}
+ 
 diff --git a/orangefox.mk b/orangefox.mk
 index d1e5046f..2d0a4fbe 100644
 --- a/orangefox.mk
@@ -210,7 +256,7 @@ index d1e5046f..2d0a4fbe 100644
      LOCAL_CFLAGS += -DOF_STATUS_H='"$(OF_STATUS_H)"'
  else
 diff --git a/partitionmanager.cpp b/partitionmanager.cpp
-index b52a7d49..dc8a7895 100755
+index b52a7d49..b78045ca 100755
 --- a/partitionmanager.cpp
 +++ b/partitionmanager.cpp
 @@ -36,6 +36,8 @@
@@ -251,13 +297,21 @@ index b52a7d49..dc8a7895 100755
  			Fstab_Filename = additional_fstab;
  			property_set("fstab.additional", "1");
  			goto parse;
-@@ -680,6 +704,19 @@ void TWPartitionManager::Decrypt_Data() {
+@@ -680,6 +704,27 @@ void TWPartitionManager::Decrypt_Data() {
  				Mount_By_Path(Decrypt_Data->Key_Directory, false);
  		if (!Decrypt_Data->Key_Directory.empty()) {
  			Set_Crypto_Type("file");
 +			{
 +				TWFunc::Exec_Cmd("mkdir -p /mnt/vendor/persist /vendor/firmware_mnt");
-+				TWFunc::Exec_Cmd("mount -t ext4 -o ro /dev/block/by-name/persist /mnt/vendor/persist");
++				// init.recovery.*.rc may have mounted persist already (gts7xlwifi)
++				std::ifstream mounts("/proc/mounts");
++				std::string line;
++				bool persist_mounted = false;
++				while (std::getline(mounts, line))
++					if (line.find(" /mnt/vendor/persist ") != std::string::npos)
++						persist_mounted = true;
++				if (!persist_mounted)
++					TWFunc::Exec_Cmd("mount -t ext4 -o ro /dev/block/by-name/persist /mnt/vendor/persist");
 +				{
 +				char slot_suffix[PROPERTY_VALUE_MAX];
 +				std::string modem_dev = "/dev/block/by-name/modem";
